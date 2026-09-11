@@ -410,6 +410,19 @@ class SessionCompressionMixin:
         if session_id:
             self._write_session_column("compression_ineffective_count", session_id, max(0, int(count)))
 
+    def get_compression_round_count(self, session_id: str) -> int:
+        """Persisted count of completed compaction boundaries for one session — the durable
+        basis for the repeated-compaction tail-budget escalation (each additional round
+        shrinks the verbatim tail kept after compaction). Durable because the gateway
+        rebuilds the compressor object on every turn / cache eviction; without this the
+        repeated-tail policy would reset to round 0 on every rebind and never escalate."""
+        return self._read_session_number("compression_round_count", session_id, int, 0)
+
+    def set_compression_round_count(self, session_id: str, count: int) -> None:
+        """Persist the completed compaction round count for one session."""
+        if session_id:
+            self._write_session_column("compression_round_count", session_id, max(0, int(count)))
+
     def get_compression_recovery_deadline(self, session_id: str) -> float:
         """Persisted anti-thrash recovery deadline (epoch; ``0.0`` = not armed). Durable
         because the gateway rebuilds the compressor every turn / cache eviction.

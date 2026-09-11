@@ -765,6 +765,16 @@ _LEAN_RECOVERY_HEADING = "## Context Recovery"
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
 _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 
+# Repeated-compaction tail escalation: a session that keeps re-compacting
+# (the same near-floor transcript growing back over threshold every few
+# turns) shrinks its verbatim tail budget further on each ADDITIONAL
+# completed boundary, on top of the base LEAN_TAIL_FLOOR/CAP calculation
+# above (never modifies those constants -- round 0 is byte-identical to the
+# pre-escalation behavior). See _escalated_tail_token_budget.
+_REPEAT_TAIL_SHRINK = 0.5
+_REPEAT_TAIL_MAX_ROUNDS = 2
+_REPEAT_TAIL_MIN_TOKENS = 6_000
+
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
@@ -1827,11 +1837,45 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 self._tail_token_budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
             else:
                 self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
-        return self._tail_token_budget
+        # The cached base above is the round-0 value and is NEVER mutated by
+        # escalation -- only the returned value shrinks as
+        # _session_compaction_rounds grows, so a round increase between two
+        # accesses within the same compaction is reflected immediately
+        # (see _escalated_tail_token_budget) instead of sticking to a stale
+        # pre-escalation number.
+        return self._escalated_tail_token_budget(self._tail_token_budget)
 
     @tail_token_budget.setter
     def tail_token_budget(self, value: int) -> None:
         self._tail_token_budget = value
+
+    def _escalated_tail_token_budget(self, base: int) -> int:
+        """Shrink ``base`` geometrically per completed same-session compaction round.
+
+        Round 0 (no completed compaction yet this session) returns ``base``
+        unchanged -- byte-identical to the pre-escalation calculation. Each
+        additional round halves the tail budget (capped at
+        ``_REPEAT_TAIL_MAX_ROUNDS`` rounds of halving), floored at
+        ``_REPEAT_TAIL_MIN_TOKENS`` so a small tail always survives. A
+        ``base`` already at or below the floor is left alone (nothing to
+        escalate). This is the fix for a long-lived session landing well
+        above its compaction floor after every pass and re-compacting a
+        transcript that barely shrank each time.
+        """
+        rounds = getattr(self, "_session_compaction_rounds", 0) or 0
+        if rounds <= 0:
+            return base
+        if base <= _REPEAT_TAIL_MIN_TOKENS:
+            return base
+        factor = _REPEAT_TAIL_SHRINK ** min(rounds, _REPEAT_TAIL_MAX_ROUNDS)
+        escalated = max(_REPEAT_TAIL_MIN_TOKENS, min(base, int(base * factor)))
+        if escalated != self._last_logged_escalated_tail and not self.quiet_mode:
+            logger.debug(
+                "Repeated-compaction tail escalation: round=%d base=%d -> %d",
+                rounds, base, escalated,
+            )
+            self._last_logged_escalated_tail = escalated
+        return escalated
 
     @property
     def max_summary_tokens(self) -> int:
@@ -1876,6 +1920,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._last_summary_fallback_used = self._last_feasibility_skip = False
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        # In-memory reset only, like every other counter in this method. UNLIKE
+        # the sibling ineffective/fallback counters (which rely on /new always
+        # minting a fresh session_id, so their old durable row is simply never
+        # reloaded again), this counter's durable row is ALSO zeroed here: /reset
+        # can reuse the same session_id, and repeated-tail escalation must not
+        # resurrect a stale round count on the next bind_session_state() reload
+        # for that same id. Best-effort (no-op without a bound session_db).
+        self._session_compaction_rounds = 0
+        self._last_logged_escalated_tail = None
+        self._persist_compression_round_count()
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         # Observability only; never feeds the strike latch or the fallback streak.
@@ -1908,10 +1962,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._consecutive_timeout_failures = self._fallback_compression_streak = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        self._session_compaction_rounds = 0
+        self._last_logged_escalated_tail = None
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
+        self._load_compression_round_count()
         self._load_anti_thrash_recovery_deadline()
         self._load_proactive_prune_rearm_tokens()
 
@@ -2011,6 +2068,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_ineffective_compression_count(self) -> None:
         self._durable_write("set_compression_ineffective_count", "compression ineffective count", self._ineffective_compression_count)
 
+    def _load_compression_round_count(self) -> None:
+        """Load the durable completed-compaction round count (repeated-tail escalation basis)
+        so a compressor rebuilt by the gateway (every turn / cache eviction) inherits how many
+        times this session has already compacted, instead of resetting to round 0."""
+        self._load_durable("_session_compaction_rounds", "get_compression_round_count", "compression round count", int, 0)
+
+    def _persist_compression_round_count(self) -> None:
+        self._durable_write("set_compression_round_count", "compression round count", self._session_compaction_rounds)
+
     def _load_anti_thrash_recovery_deadline(self) -> None:
         """Restore the durable recovery deadline (wall-clock epoch); missing storage leaves it disarmed.
 
@@ -2057,6 +2123,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
         self._verify_compaction_cleared_threshold = True
+        # Reaching this method AT ALL is the completed-boundary signal (the only
+        # caller, conversation_compression, invokes it exactly when a compaction
+        # actually committed) -- repeated-tail escalation counts every boundary,
+        # including a feasibility-skip one: the skip still committed a real
+        # (deterministic) boundary, so the NEXT compaction is still a repeat.
+        self._session_compaction_rounds = (getattr(self, "_session_compaction_rounds", 0) or 0) + 1
+        self._persist_compression_round_count()
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
             # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
@@ -2368,6 +2441,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._resolved_context_length: int | None = None
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self.compression_count = 0
+        # Completed compaction boundaries THIS session (durable, see
+        # bind_session_state / _load_compression_round_count) -- drives
+        # _escalated_tail_token_budget. 0 = round-0 behavior, byte-identical
+        # to the pre-escalation tail_token_budget calculation.
+        self._session_compaction_rounds: int = 0
+        # Dedup key so the escalation debug log fires once per distinct
+        # (round, escalated-value) pair instead of once per tail_token_budget
+        # access (the property can be read many times per compaction pass).
+        self._last_logged_escalated_tail: int | None = None
         # The init log reports resolved budgets; emit it on first resolution to keep construction non-blocking.
         # The "initialized" log reports resolved token budgets, which would force the deferred
         # get_model_context_length() probe to run inside __init__ and re-introduce the exact synchronous

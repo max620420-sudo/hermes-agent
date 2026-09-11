@@ -202,6 +202,18 @@ def _build_child_agent(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
+    # Shared Evidence Cache: prepend relevant cached evidence (fail-open — any error keeps prompt unchanged).
+    with _quiet("subagent: shared evidence lookup failed", exc_info=True):
+        from agent.shared_evidence_cache import maybe_inject_evidence
+        _ev_workspace = _resolve_workspace_hint(parent_agent) or ""
+        _ev_block = maybe_inject_evidence(
+            getattr(parent_agent, "_session_db", None),
+            workspace=_ev_workspace,
+            task=goal,
+            context=context or "",
+        )
+        if _ev_block:
+            child_prompt = _ev_block + "\n" + child_prompt
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")

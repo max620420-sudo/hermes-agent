@@ -399,6 +399,34 @@ def _finalize_child_results(
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+    # Shared Evidence Cache: save evidence from each successful child (fail-open).
+    try:
+        from agent.shared_evidence_cache import maybe_save_evidence_from_result, evidence_id_footer
+        from tools.delegate_tool_progress import _resolve_workspace_hint
+        _ev_workspace = _resolve_workspace_hint(parent_agent) or ""
+        if _ev_workspace:
+            _parent_db = getattr(parent_agent, "_session_db", None)
+            for result, task in zip(results, task_list):
+                _goal = task.get("goal", "") if isinstance(task, dict) else ""
+                _child = child_by_index.get(result.get("task_index", -1))
+                _child_sid = str(getattr(_child, "session_id", "") or "")
+                _child_said = str(getattr(_child, "_subagent_id", "") or "")
+                ev_id = maybe_save_evidence_from_result(
+                    _parent_db,
+                    workspace=_ev_workspace,
+                    goal=_goal,
+                    result=result,
+                    producer_session_id=_child_sid,
+                    producer_subagent_id=_child_said,
+                )
+                if ev_id:
+                    # Append tiny footer to summary so parent sees the evidence ID.
+                    for key in ("summary", "output", "result"):
+                        if isinstance(result.get(key), str) and result[key].strip():
+                            result[key] = result[key].rstrip() + evidence_id_footer(ev_id)
+                            break
+    except Exception:
+        logger.debug("SharedEvidence: finalize save failed (fail-open)", exc_info=True)
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

@@ -1446,6 +1446,23 @@ def _run_conversation_turn(
             user_message, persist_user_message
         )
 
+    # Explicit session-handoff snapshot (Task 8-lite).
+    # Only fires on explicit new-session/resume phrases. No extra LLM call.
+    # Best-effort: handoff handling must never break the normal turn.
+    if isinstance(user_message, str) and user_message:
+        try:
+            from agent.handoff_snapshot import maybe_handle_handoff_intent
+
+            _annotated_message = maybe_handle_handoff_intent(agent, user_message)
+            if _annotated_message is not user_message:
+                # Synthetic resume context is model-facing only.
+                # Persist the user's original message in transcript/history.
+                if persist_user_message is None:
+                    persist_user_message = user_message
+                user_message = _annotated_message
+        except Exception:
+            logger.debug("handoff snapshot intent check failed", exc_info=True)
+
     # The gateway caches agents across turns; compression state is per-turn, or a stale
     # in-place boundary would make a later uncompressed result look compacted.
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False

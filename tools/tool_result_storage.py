@@ -143,12 +143,46 @@ def _safe_result_filename(tool_use_id: str) -> str:
     return f"{safe_stem}.txt"
 
 
-def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
-    """Truncate at last newline within max_chars. Returns (preview, has_more)."""
+def generate_preview(
+    content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS, tail_chars: int = 0,
+) -> tuple[str, bool]:
+    """Truncate at last newline within max_chars. Returns (preview, has_more).
+
+    ``tail_chars > 0`` additionally keeps the last ``tail_chars`` of the
+    payload, separated from the head by an explicit marker naming how many
+    characters were elided from the middle -- used by the subagent budget
+    (``tools.budget_config.budget_for_subagent``), where a spilled result
+    must stay usable from the preview alone (the end of a run -- exit
+    status, totals, the tail of a traceback -- is usually where the answer
+    is). When the payload isn't long enough for a middle to actually be
+    elided, the would-be tail is merged straight into the head instead
+    (``has_more=False``) rather than duplicating content.
+    ``tail_chars<=0`` (the default) is the historical head-only behavior,
+    byte-for-byte unchanged.
+    """
     if len(content) <= max_chars:
         return content, False
     last_nl = content.rfind("\n", 0, max_chars)
-    return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
+    head = content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars]
+
+    if tail_chars <= 0:
+        return head, True
+
+    remaining = content[len(head):]
+    if len(remaining) <= tail_chars:
+        return head + remaining, False
+
+    tail = remaining[-tail_chars:]
+    first_nl = tail.find("\n")
+    if 0 <= first_nl < tail_chars // 2:
+        tail = tail[first_nl + 1:]
+    elided = len(content) - len(head) - len(tail)
+    return (
+        f"{head}\n"
+        f"... [{elided:,} characters elided from the middle — "
+        f"read the saved file for this section] ...\n"
+        f"{tail}"
+    ), True
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -161,10 +195,22 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
 
 
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
-                             file_path: str) -> str:
-    """Build the <persisted-output> replacement block."""
+                             file_path: str, has_tail: bool = False) -> str:
+    """Build the <persisted-output> replacement block.
+
+    ``has_tail=True`` labels the preview as head+tail (middle elided) rather
+    than the historical head-only "first N chars" framing -- see
+    ``generate_preview``'s ``tail_chars`` and
+    ``tools.budget_config.budget_for_subagent``.
+    """
     size_kb = original_size / 1024
     size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
+    if has_tail:
+        preview_header = f"Preview ({len(preview)} chars — head + tail, middle elided):\n"
+        preview_body = preview
+    else:
+        preview_header = f"Preview (first {len(preview)} chars):\n"
+        preview_body = preview + ("\n..." if has_more else "")
     return (
         f"{PERSISTED_OUTPUT_TAG}\n"
         f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
@@ -173,8 +219,8 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         "Recovery: page through the saved file with read_file (offset/limit) or "
         "process it with execute_code — do NOT re-request the same data from the "
         "remote API; the full result is already on disk.\n\n"
-        f"Preview (first {len(preview)} chars):\n"
-        + preview + ("\n..." if has_more else "")
+        + preview_header
+        + preview_body
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
 
 
@@ -200,12 +246,20 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     if threshold == float("inf") or len(content) <= threshold:
         return content
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    _tail_chars = max(0, getattr(config, "preview_tail_size", 0) or 0)
+    preview, has_more = generate_preview(
+        content, max_chars=config.preview_size, tail_chars=_tail_chars
+    )
+    # Tail actually survived only if the payload was long enough to elide a
+    # middle; generate_preview merges head+tail (has_more=False) otherwise.
+    _has_tail = bool(_tail_chars) and has_more
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
                     tool_name, tool_use_id, len(content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(content), path)
+        return _build_persisted_message(
+            preview, has_more, len(content), path, has_tail=_has_tail
+        )
 
     # Always persist host-side first: cache/spillover is the single canonical home.
     host_path = _write_to_spillover(content, filename)

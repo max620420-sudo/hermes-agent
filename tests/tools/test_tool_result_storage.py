@@ -7,6 +7,7 @@ from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
+    budget_for_subagent,
 )
 from tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
@@ -483,3 +484,115 @@ class TestRecoveryHint:
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
+
+
+# ── generate_preview: tail_chars (Task 4 semantic port) ────────────────
+
+class TestGeneratePreviewTail:
+    def test_tail_chars_zero_is_byte_identical_to_head_only(self):
+        """The default (tail_chars=0) path must be untouched by the port."""
+        text = "y" * (DEFAULT_PREVIEW_SIZE_CHARS * 3)
+        head_only = generate_preview(text)
+        head_only_explicit = generate_preview(text, tail_chars=0)
+        assert head_only == head_only_explicit
+
+    def test_short_content_with_tail_unchanged(self):
+        text = "short result"
+        preview, has_more = generate_preview(text, max_chars=1_500, tail_chars=500)
+        assert preview == text
+        assert has_more is False
+
+    def test_head_and_tail_both_present_with_elision_marker(self):
+        content = ("HEAD" * 500) + ("MIDDLE" * 5_000) + ("TAIL" * 500)
+        preview, has_more = generate_preview(content, max_chars=2_000, tail_chars=1_000)
+        assert has_more is True
+        assert preview.startswith("HEAD")
+        assert "elided from the middle" in preview
+        assert preview.endswith("TAIL")  # the tail chunk actually survived
+        assert "TAIL" in preview[-1_050:]
+
+    def test_elided_char_count_is_exact(self):
+        content = "H" * 2_000 + "M" * 50_000 + "T" * 1_000
+        preview, has_more = generate_preview(content, max_chars=2_000, tail_chars=1_000)
+        assert has_more is True
+        # head len + tail len + elided marker's own count must reconstruct
+        # the original length exactly.
+        import re
+        m = re.search(r"\[([\d,]+) characters elided from the middle", preview)
+        assert m is not None
+        elided = int(m.group(1).replace(",", ""))
+        head_part, _, rest = preview.partition("\n... [")
+        tail_part = preview.rsplit("] ...\n", 1)[1]
+        assert len(head_part) + elided + len(tail_part) == len(content)
+
+    def test_no_middle_to_elide_merges_into_head_no_more_flag(self):
+        """When head + remaining tail together reconstruct the whole
+        payload (nothing actually dropped), has_more must be False and no
+        elision marker should appear."""
+        content = "x" * 2_500  # just over max_chars, remaining <= tail_chars
+        preview, has_more = generate_preview(content, max_chars=2_000, tail_chars=1_000)
+        assert has_more is False
+        assert "elided" not in preview
+        assert preview == content  # nothing lost, no marker inserted
+
+    def test_tail_leading_partial_line_is_trimmed(self):
+        # Construct content where the raw last-tail_chars slice starts
+        # mid-line; the trimmed tail must start at a line boundary.
+        content = "H" * 3_000 + "\n" + ("line%d\n" % 1) * 2_000
+        preview, has_more = generate_preview(content, max_chars=1_000, tail_chars=200)
+        assert has_more is True
+        tail_section = preview.rsplit("] ...\n", 1)[1]
+        # A trimmed tail either starts exactly on a "line" boundary or (if no
+        # newline was found in the raw slice) is left as-is; either way it
+        # must not be empty and must be <= the requested tail_chars.
+        assert 0 < len(tail_section) <= 200
+
+
+# ── budget_for_subagent end-to-end spillover fixture ────────────────────
+
+class TestSubagentSpillFixture:
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
+        yield
+
+    def test_30k_to_60k_result_spills_with_head_and_tail_preview(self):
+        """A 30-60K subagent tool result (the exact size class this port
+        targets) must spill, keep the raw content byte-for-byte on disk, and
+        surface a head+tail preview in the replacement message."""
+        budget = budget_for_subagent(None)  # 24K threshold, 6K/3K preview ceiling
+        raw = ("START-OF-OUTPUT\n" + ("payload line\n" * 3_000) + "END-OF-OUTPUT\n")
+        assert 30_000 < len(raw) < 60_000  # sanity-check the fixture size class
+
+        result = maybe_persist_tool_result(
+            content=raw,
+            tool_name="execute_code",
+            tool_use_id="tc_subagent_big",
+            env=None,
+            config=budget,
+        )
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "head + tail, middle elided" in result
+        assert "START-OF-OUTPUT" in result
+        assert "END-OF-OUTPUT" in result
+
+        spill_file = get_spillover_dir() / "tc_subagent_big.txt"
+        assert spill_file.exists()
+        assert spill_file.read_text(encoding="utf-8") == raw  # raw fully preserved
+        assert str(spill_file) in result
+
+        # Active-context replacement is dramatically smaller than the raw
+        # output -- the whole point of the port.
+        assert len(result) < len(raw) * 0.5
+
+    def test_small_subagent_result_passes_through_unchanged(self):
+        budget = budget_for_subagent(None)
+        content = "small tool output, well under threshold"
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_small",
+            env=None, config=budget,
+        )
+        assert result == content

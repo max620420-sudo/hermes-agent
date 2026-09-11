@@ -52,7 +52,12 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     extract_persisted_path,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    BudgetConfig,
+    DEFAULT_BUDGET,
+    budget_for_context_window,
+    budget_for_subagent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,35 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     )
 
 
+def _is_subagent_session(agent) -> bool:
+    """True when this agent loop is a delegated subagent, not the main session.
+
+    Priority order (any one signal is enough):
+      1. ``platform == "subagent"`` -- set by ``tools/delegate_tool.py`` when
+         spawning a child; the RELIABLE production signal.
+      2. ``_delegate_depth > 0`` -- run_agent's delegation-depth bookkeeping
+         (0 = top-level, set by ``tools/delegate_tool.py`` on every child);
+         also reliable.
+      3. ``is_subagent`` -- forward-compatibility only. As of this port,
+         nothing in production ever SETS this attribute (it is only read,
+         defaulting to False, in a few call-role-logging call sites) -- it
+         is NOT currently a trustworthy signal on its own, kept here so a
+         future caller that does set it is honored for free.
+
+    Any exception (missing/odd attribute types) falls back to False --
+    parent/main budget behavior, the safe default.
+    """
+    try:
+        platform = getattr(agent, "platform", None)
+        if isinstance(platform, str) and platform.strip().lower() == "subagent":
+            return True
+        if int(getattr(agent, "_delegate_depth", 0) or 0) > 0:
+            return True
+        return bool(getattr(agent, "is_subagent", False))
+    except Exception:
+        return False
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Tool-result BudgetConfig scaled to the agent's context window. Unknown length goes
     through ``budget_for_context_window(None)`` (not DEFAULT_BUDGET) so the MCP threshold
@@ -97,10 +131,20 @@ def _budget_for_agent(agent) -> BudgetConfig:
     model switched into mid-session) get a budget proportional to their window so a single large tool result
     can't push the request past the model's limit (#23767). Falls back to the default budget when the
     context length isn't resolvable.
+
+    Subagents get a tighter per-result threshold on top of that scaling (see
+    ``budget_for_subagent``): their whole history is re-sent on every model
+    call with no compaction and no user in the loop, so a 30-60K-char result
+    that clears the generic 100K threshold would otherwise sit verbatim in
+    the active conversation for the rest of the task. Parent/main sessions
+    never take this branch -- their behavior is unchanged.
     """
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx) if ctx else None)
+        ctx_len = int(ctx) if ctx else None
+        if _is_subagent_session(agent):
+            return budget_for_subagent(ctx_len)
+        return budget_for_context_window(ctx_len)
     except Exception:
         return DEFAULT_BUDGET
 

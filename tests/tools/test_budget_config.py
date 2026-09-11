@@ -17,8 +17,12 @@ from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
+    SUBAGENT_PREVIEW_HEAD_CHARS,
+    SUBAGENT_PREVIEW_TAIL_CHARS,
+    SUBAGENT_RESULT_SIZE_CHARS,
     BudgetConfig,
     budget_for_context_window,
+    budget_for_subagent,
 )
 
 
@@ -207,6 +211,77 @@ class TestMcpPrefixThreshold:
     def test_mcp_threshold_never_exceeds_default_result_size(self):
         cfg = BudgetConfig(default_result_size=100_000, mcp_result_size=999_999)
         assert cfg.resolve_threshold("mcp_anything") == 100_000
+
+
+# ---------------------------------------------------------------------------
+# budget_for_subagent() -- Task 4 semantic port
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetForSubagent:
+    """Effective threshold clamps to SUBAGENT_RESULT_SIZE_CHARS (24K); the
+    head/tail preview scales proportionally to the EFFECTIVE threshold, not
+    the fixed ceiling, so preview never approaches the spill threshold on a
+    context-window-shrunk budget."""
+
+    def test_large_window_hits_the_24k_ceiling(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # no config.yaml
+        cfg = budget_for_subagent(None)  # base default_result_size == 100_000
+        assert cfg.default_result_size == 24_000 == SUBAGENT_RESULT_SIZE_CHARS
+        assert cfg.preview_size == 6_000 == SUBAGENT_PREVIEW_HEAD_CHARS
+        assert cfg.preview_tail_size == 3_000 == SUBAGENT_PREVIEW_TAIL_CHARS
+
+    def test_16k_effective_threshold_scales_preview_to_4k_2k(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = budget_for_context_window(26_667)
+        assert base.default_result_size == 16_000  # sanity-check the fixture
+        cfg = budget_for_subagent(26_667)
+        assert cfg.default_result_size == 16_000
+        assert cfg.preview_size == 4_000
+        assert cfg.preview_tail_size == 2_000
+
+    def test_8k_effective_threshold_scales_preview_to_2k_1k(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = budget_for_context_window(10_000)
+        assert base.default_result_size == 8_000  # sanity-check the fixture (floor)
+        cfg = budget_for_subagent(10_000)
+        assert cfg.default_result_size == 8_000
+        assert cfg.preview_size == 2_000
+        assert cfg.preview_tail_size == 1_000
+
+    def test_preview_never_approaches_the_spill_threshold(self, tmp_path, monkeypatch):
+        """head + tail must stay well under the threshold at every scale
+        tested above -- the whole point of scaling instead of using a fixed
+        6K/3K preview on a shrunk budget."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for ctx_len in (None, 26_667, 10_000):
+            cfg = budget_for_subagent(ctx_len)
+            assert cfg.preview_size + cfg.preview_tail_size <= cfg.default_result_size
+
+    def test_read_file_stays_pinned_to_inf(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = budget_for_subagent(None)
+        assert cfg.resolve_threshold("read_file") == float("inf")
+        assert math.isinf(cfg.resolve_threshold("read_file"))
+
+    def test_mcp_result_size_capped_by_effective_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = budget_for_subagent(10_000)  # effective_threshold == 8_000
+        assert cfg.mcp_result_size == 8_000
+        assert cfg.resolve_threshold("mcp_anything") == 8_000
+
+    def test_turn_budget_and_tool_overrides_carried_through_from_base(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = budget_for_context_window(26_667)
+        cfg = budget_for_subagent(26_667)
+        assert cfg.turn_budget == base.turn_budget
+        assert cfg.tool_overrides == base.tool_overrides
+
+    def test_result_is_frozen_like_any_other_budget_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = budget_for_subagent(None)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            cfg.default_result_size = 1
 
     def test_config_override_via_hermes_home(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(

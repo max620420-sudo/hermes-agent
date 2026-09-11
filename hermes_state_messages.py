@@ -1196,6 +1196,55 @@ class SessionMessagesMixin:
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
                 **({"replacement_message_id": replacement_message_id} if preserve_compaction_handoff else {})}
 
+    def deactivate_tool_results(self, session_id: str, tool_call_ids: "Sequence[str]") -> int:
+        """Soft-archive specific ``tool`` rows by ``tool_call_id`` (subagent stale
+        tool-result age-out, Task 5 semantic port).
+
+        Same soft-archive semantics as :meth:`archive_and_compact`'s
+        ``_ARCHIVE_ACTIVE_SQL`` (``active = 0, compacted = 1``): nothing is
+        DELETEd, the row's content and any Task-4 spillover file it references
+        stay exactly as they are on disk, and the row remains reachable via
+        :meth:`get_messages` with ``include_inactive=True`` and via
+        ``session_search`` (``compacted = 1`` keeps it in the same discoverable
+        bucket compaction-archived rows use). It simply stops being replayed
+        into the live wire context (``get_messages``'s default ``active = 1``
+        view).
+
+        Idempotent and non-destructive by design, so this deliberately does
+        NOT use ``_check_transcript_write_guards``'s ``reject_active_*`` opt-ins
+        (those exist for destructive user-initiated rewrites like rewind/edit;
+        an ordinary append-adjacent soft-archive is safe to run concurrently
+        with a turn lease or compression lock, same as ``append_message``).
+        ``AND active = 1`` in the SQL makes a repeat call a no-op — safe to
+        call again if the caller's session-scoped dedup cache ever misses.
+
+        Returns the number of rows actually flipped from active to inactive
+        (0 for empty/missing input, an already-inactive id, or a session with
+        no matching rows).
+        """
+        if not session_id:
+            return 0
+        ids = sorted({cid for cid in (tool_call_ids or []) if isinstance(cid, str) and cid})
+        if not ids:
+            return 0
+
+        def _do(conn) -> int:
+            flipped = 0
+            # Chunked to stay well under SQLite's bound-variable ceiling.
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start + 400]
+                placeholders = _placeholders(chunk)
+                cur = conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 1 "
+                    "WHERE session_id = ? AND active = 1 AND role = 'tool' "
+                    f"AND tool_call_id IN ({placeholders})",
+                    [session_id, *chunk],
+                )
+                flipped += cur.rowcount or 0
+            return flipped
+
+        return self._execute_write(_do)
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")

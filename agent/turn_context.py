@@ -1031,6 +1031,96 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
     return _sanitize_model
 
 
+# Subagent-only stale tool-result age-out (Task 5 semantic port): a delegated
+# child's whole history is re-sent on every model call with no compaction and
+# no user in the loop, so old tool output otherwise rides in the wire request
+# forever. Keep only the most recent N model (assistant) turns' worth of tool
+# results in the outgoing copy; older ones are excluded from THIS request but
+# never removed from ``messages`` (durable history) or spillover storage.
+_SUBAGENT_TOOL_RESULT_MAX_MODEL_TURNS = 4
+
+
+def _compute_subagent_aged_tool_indexes(
+    messages: List[Dict[str, Any]], keep_assistant_turns: int = _SUBAGENT_TOOL_RESULT_MAX_MODEL_TURNS,
+) -> Tuple[set, List[str]]:
+    """Pure helper: which ``messages`` indexes are stale ``tool`` rows, and their ids.
+
+    Returns ``(aged_out_idxs, aged_out_tool_call_ids)``. Never mutates ``messages``.
+
+    Age is counted in ASSISTANT (model-call) turns walked backward from the end,
+    NOT user turns — a subagent's loop is typically one initial user message
+    followed by many assistant<->tool iterations, so counting user messages
+    would almost never advance and nothing would ever age out (the bug in the
+    original implementation this ports). A tool row that has already seen
+    ``keep_assistant_turns`` LATER assistant messages ages out; the boundary
+    moves only when another assistant message is added, never when user
+    messages are added.
+    """
+    aged_out_idxs: set = set()
+    aged_out_ids: List[str] = []
+    turns_after = 0
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        role = msg.get("role") if isinstance(msg, dict) else None
+        if role == "tool":
+            if turns_after >= keep_assistant_turns:
+                aged_out_idxs.add(i)
+                _cid = msg.get("tool_call_id")
+                if isinstance(_cid, str) and _cid:
+                    aged_out_ids.append(_cid)
+        elif role == "assistant":
+            turns_after += 1
+    return aged_out_idxs, aged_out_ids
+
+
+def _persist_subagent_tool_result_age_out(agent: Any, tool_call_ids: List[str]) -> None:
+    """Best-effort durable half of the age-out: flip ``active=False`` in SessionDB
+    so a session reload cannot resurrect an aged-out tool row as active context.
+
+    Session-scoped dedup: ``build_api_messages`` reruns on every retry/API call
+    within a turn, so this only re-attempts ids not already persisted THIS
+    session (``agent._subagent_aged_out_persisted[session_id]``) — keyed per
+    session because the same agent object can be reused across sessions. The
+    DB write is also independently idempotent (``AND active = 1``), so a
+    missed/duplicate cache entry never double-applies or loses data.
+
+    Never raises: no session_db, no method, or a DB error all degrade to
+    "wire-only age-out this turn, try persisting again next call" rather than
+    breaking the turn.
+    """
+    if not tool_call_ids:
+        return
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return
+    persisted_by_session = getattr(agent, "_subagent_aged_out_persisted", None)
+    if not isinstance(persisted_by_session, dict):
+        persisted_by_session = {}
+        try:
+            agent._subagent_aged_out_persisted = persisted_by_session
+        except Exception:
+            pass
+    already = persisted_by_session.get(session_id)
+    if already is None:
+        already = set()
+        persisted_by_session[session_id] = already
+    new_ids = [cid for cid in tool_call_ids if cid not in already]
+    if not new_ids:
+        return
+    session_db = getattr(agent, "_session_db", None)
+    deactivate = getattr(session_db, "deactivate_tool_results", None)
+    if not callable(deactivate):
+        return
+    try:
+        deactivate(session_id, new_ids)
+        already.update(new_ids)
+    except Exception:
+        logger.debug(
+            "subagent tool-result age-out DB persist failed (session=%s)",
+            session_id, exc_info=True,
+        )
+
+
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
@@ -1044,12 +1134,37 @@ def build_api_messages(
     prologue). Ephemeral context (prefetch, ``pre_llm_call`` hooks,
     ``ephemeral_system_prompt``) is added at API time only — ``messages`` stays untouched
     beyond the sidecar stamp, and the system prompt is built ONCE per session and
-    replayed verbatim."""
+    replayed verbatim.
+
+    Subagent-only stale tool-result age-out (Task 5 semantic port): on a
+    delegated subagent session, ``tool`` rows older than
+    ``_SUBAGENT_TOOL_RESULT_MAX_MODEL_TURNS`` model turns are excluded from
+    THIS wire copy only (``messages`` and spillover storage are untouched).
+    Their paired assistant ``tool_calls`` are left completely alone here —
+    the unconditional ``agent._sanitize_api_messages`` pass that runs right
+    after this function (see ``turn_request_assembly.py``) already drops
+    positional orphans and stubs any tool_call left unanswered, so no
+    duplicate pairing logic belongs in this loop. Parent/main sessions
+    (``_is_subagent_session`` False) compute an empty aged-out set and take
+    the exact pre-port code path -- byte-identical output.
+    """
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
 
+    _aged_out_idxs: set = set()
+    try:
+        from agent.tool_executor import _is_subagent_session
+    except Exception:
+        _is_subagent_session = None
+    if callable(_is_subagent_session) and _is_subagent_session(agent):
+        _aged_out_idxs, _aged_out_ids = _compute_subagent_aged_tool_indexes(messages)
+        if _aged_out_ids:
+            _persist_subagent_tool_result_age_out(agent, _aged_out_ids)
+
     api_messages = []
     for idx, msg in enumerate(messages):
+        if idx in _aged_out_idxs:
+            continue
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)

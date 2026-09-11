@@ -51,7 +51,12 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     extract_persisted_path,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    BudgetConfig,
+    DEFAULT_BUDGET,
+    budget_for_context_window,
+    budget_for_subagent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,26 @@ def _ensure_file_checkpoint(
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
 
 
+def _is_subagent_session(agent) -> bool:
+    """True when this agent loop is a delegated subagent, not the main session.
+
+    Checks every signal the runtime sets, because they are set at different
+    layers: ``is_subagent`` (read the same way by conversation_loop /
+    chat_completion_helpers / codex_runtime), ``_delegate_depth`` (run_agent's
+    delegation bookkeeping — depth > 0 means delegated), and the ``subagent``
+    platform tag (task_context["platform"]). Any one of them is enough.
+    """
+    try:
+        if getattr(agent, "is_subagent", False):
+            return True
+        if int(getattr(agent, "_delegate_depth", 0) or 0) > 0:
+            return True
+        platform = getattr(agent, "platform", None)
+        return isinstance(platform, str) and platform.strip().lower() == "subagent"
+    except Exception:
+        return False
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -109,13 +134,23 @@ def _budget_for_agent(agent) -> BudgetConfig:
     proportional to their window so a single large tool result can't push the
     request past the model's limit (#23767). Falls back to the default budget
     when the context length isn't resolvable.
+
+    Subagents get a tighter per-result threshold on top of that scaling (see
+    ``budget_for_subagent``): their whole history is re-sent on every model
+    call with no compaction and no user in the loop, so a 30-60K-char result
+    that clears the generic 100K threshold would otherwise sit verbatim in the
+    active conversation for the rest of the task. The main session is
+    unchanged.
     """
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+        ctx_len = int(ctx) if ctx else None
+        if _is_subagent_session(agent):
+            return budget_for_subagent(ctx_len)
         # budget_for_context_window(None) (rather than DEFAULT_BUDGET) so the
         # config-driven MCP threshold override still applies when the context
         # length isn't resolvable.
-        return budget_for_context_window(int(ctx) if ctx else None)
+        return budget_for_context_window(ctx_len)
     except Exception:
         return DEFAULT_BUDGET
 

@@ -35,6 +35,27 @@ DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 # untrusted-content wrapper keys on in agent/tool_dispatch_helpers.py).
 MCP_TOOL_PREFIX: str = "mcp_"
 
+# Tighter per-result threshold for SUBAGENT sessions.
+#
+# A subagent runs a bounded task loop whose whole history is re-sent on every
+# model call, and it has no /compact, no user to trim the thread, and no
+# rollover before the task ends. A single 30-60K-char execute_code result
+# therefore sails under the generic 100K per-result threshold AND under the
+# 200K per-turn budget, stays verbatim in the active conversation, and is
+# re-sent on every subsequent call for the rest of the task — measured as the
+# dominant cause of subagent input growing from ~5K to 120-165K chars.
+#
+# Parent/main sessions keep the 100K default (they have compaction and a user
+# in the loop); only the subagent path tightens. Spillover (not truncation)
+# means the full payload still lands on disk and stays re-readable.
+SUBAGENT_RESULT_SIZE_CHARS: int = 16_000
+
+# Active-context preview kept for a spilled subagent result: head + tail, so
+# the model keeps the beginning (what the call was / how it started) and the
+# end (exit status, totals, the tail of a traceback) rather than head only.
+SUBAGENT_PREVIEW_HEAD_CHARS: int = 8_000
+SUBAGENT_PREVIEW_TAIL_CHARS: int = 4_000
+
 
 def _configured_mcp_result_size() -> int:
     """Read ``tool_budget.mcp_result_size_chars`` from the active config.
@@ -70,12 +91,15 @@ class BudgetConfig:
     Layer 2 (per-result): resolve_threshold(tool_name) -> threshold in chars.
     Layer 3 (per-turn):   turn_budget -> aggregate char budget across all tool
                           results in a single assistant turn.
-    Preview:              preview_size -> inline snippet size after persistence.
+    Preview:              preview_size -> inline snippet size after persistence,
+                          preview_tail_size -> extra chars kept from the END of
+                          the payload (0 = head-only, the historical behavior).
     """
 
     default_result_size: int = DEFAULT_RESULT_SIZE_CHARS
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
+    preview_tail_size: int = 0
     mcp_result_size: int = DEFAULT_MCP_RESULT_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
 
@@ -171,4 +195,36 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
         turn_budget=per_turn,
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
         mcp_result_size=mcp_result_size,
+    )
+
+
+def budget_for_subagent(context_length: int | None) -> BudgetConfig:
+    """Return the tool-result budget for a SUBAGENT session.
+
+    Same shape as :func:`budget_for_context_window` (so a small-model subagent
+    still gets the context-scaled values), then tightened:
+
+    * per-result threshold clamped to ``SUBAGENT_RESULT_SIZE_CHARS`` (16K) —
+      the fix for large results living verbatim in a subagent's active
+      conversation and being re-sent on every subsequent model call;
+    * the surviving preview becomes head + tail (8K + 4K) instead of the 1.5K
+      head-only snippet, because a subagent has no user to re-ask and the
+      spilled result must stay usable from the preview alone.
+
+    ``resolve_threshold`` caps per-tool registry values at
+    ``default_result_size``, so tightening that one field also tightens every
+    tool that registers a larger ``max_result_size_chars``. ``read_file``
+    stays pinned to ``inf`` (PINNED_THRESHOLDS), so paging back through a
+    spilled file can never re-spill.
+
+    Parent/main sessions never call this — their budget is unchanged.
+    """
+    base = budget_for_context_window(context_length)
+    return BudgetConfig(
+        default_result_size=min(base.default_result_size, SUBAGENT_RESULT_SIZE_CHARS),
+        turn_budget=base.turn_budget,
+        preview_size=min(base.default_result_size, SUBAGENT_PREVIEW_HEAD_CHARS),
+        preview_tail_size=SUBAGENT_PREVIEW_TAIL_CHARS,
+        mcp_result_size=min(base.mcp_result_size, SUBAGENT_RESULT_SIZE_CHARS),
+        tool_overrides=dict(base.tool_overrides),
     )

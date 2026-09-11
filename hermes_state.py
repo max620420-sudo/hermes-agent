@@ -14712,6 +14712,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchall()
         return [int(row[0]) for row in rows]
 
+    def deactivate_tool_results(
+        self, session_id: str, tool_call_ids: List[str]
+    ) -> int:
+        """Soft-deactivate specific tool-result rows by ``tool_call_id``.
+
+        The durable half of the subagent tool-result age-out (conversation_loop
+        stamps ``active=False`` on the in-memory message; this persists the
+        same flip). Reuses the soft-archive semantics of
+        :meth:`archive_and_compact` rather than deleting anything: the row, its
+        content and any spilled-output file stay exactly as they are, so the
+        live-context load (:meth:`get_messages`, ``active = 1``) stops
+        replaying them while ``include_inactive=True`` and
+        ``search_messages()`` can still reach them (``compacted = 1`` keeps
+        them discoverable, same as compaction-archived rows).
+
+        Returns the number of rows flipped.
+        """
+        ids = [cid for cid in (tool_call_ids or []) if isinstance(cid, str) and cid]
+        if not session_id or not ids:
+            return 0
+
+        def _run(conn) -> int:
+            flipped = 0
+            # Chunked to stay well under SQLite's bound-variable ceiling.
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 1 "
+                    "WHERE session_id = ? AND active = 1 AND role = 'tool' "
+                    f"AND tool_call_id IN ({placeholders})",
+                    (session_id, *chunk),
+                )
+                flipped += cur.rowcount or 0
+            return flipped
+
+        return self._execute_write(_run)
+
     @staticmethod
     def _active_transcript_counts(conn, session_id: str) -> tuple[int, int]:
         """Return active message/tool-call counts inside the caller's txn."""

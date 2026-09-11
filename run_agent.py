@@ -2008,6 +2008,17 @@ class AIAgent:
         delegate/enabled gates below — those stay keyed on ``focus`` so a
         bare /refine keeps its historical gating behavior.
         """
+        # Avoid review duplicates within the same parent task.  Once a parent
+        # task has already produced a background_review fork/requeue cycle,
+        # we do not run another in that same task even if multiple triggers
+        # fire or a deferred review is re-queued.
+        parent_task_id = getattr(self, "_current_task_id", None)
+        if not parent_task_id:
+            parent_task_id = getattr(self, "_parent_session_id", None)
+        if parent_task_id:
+            if getattr(self, "_last_background_review_parent_task_id", None) == parent_task_id:
+                return
+
         # Delegation-subagent and enabled gates run here at enqueue/spawn
         # time; the idle dispatcher re-checks the enabled gate again at
         # dispatch time so a review queued for minutes cannot be
@@ -2020,6 +2031,11 @@ class AIAgent:
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
+
+        # Mark this parent task as having produced a background-review attempt.
+        # This intentionally also suppresses deferred-review requeue loops.
+        if parent_task_id:
+            self._last_background_review_parent_task_id = parent_task_id
 
         # Structural clone at the single chokepoint every review path
         # (automatic, /refine, idle-queue deferral) goes through. The fork
@@ -2034,6 +2050,7 @@ class AIAgent:
             review_skills=review_skills,
             focus=focus,
             task_cfg=task_cfg,
+            parent_task_id=parent_task_id,
         )
         if focus is None and not explicit:
             from agent.review_idle_queue import (
@@ -2056,6 +2073,7 @@ class AIAgent:
         focus: Optional[str] = None,
         task_cfg: Optional[Dict[str, Any]] = None,
         _requeue_attempts: int = 0,
+        parent_task_id: Optional[str] = None,
     ) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -2079,6 +2097,13 @@ class AIAgent:
         cloud, where reviews finish in seconds — would silently discard
         most learning on an active session.
         """
+        if parent_task_id and parent_task_id == getattr(
+            self,
+            "_last_background_review_parent_task_id",
+            None,
+        ):
+            return
+
         from agent.background_review import (
             finish_background_review_run,
             prepare_background_review_run,
@@ -2111,6 +2136,7 @@ class AIAgent:
                         focus=focus,
                         task_cfg=task_cfg,
                         _requeue_attempts=_requeue_attempts + 1,
+                        parent_task_id=parent_task_id,
                     ),
                 )
 

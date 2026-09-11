@@ -266,9 +266,10 @@ def _review_input_token_budget(
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read for the automatic-review gate + task block.
 
-    Returns ``(enabled, task_cfg)``. Fail-open on config errors (``enabled=True``)
-    so a broken config file does not silently disable reviews — but log at
-    WARNING so the cost-incurring path is visible.
+    Returns ``(enabled, task_cfg)``. Fail-closed on config errors
+    (``enabled=False``) so a broken config file cannot silently turn on the
+    cost-incurring automatic-review path — logged at WARNING so the failure
+    itself is visible.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -278,14 +279,14 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
         aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
         task = aux.get("background_review", {})
         task = task if isinstance(task, dict) else {}
-        return is_truthy_value(task.get("enabled"), default=True), task
+        return is_truthy_value(task.get("enabled"), default=False), task
     except Exception:
         logger.warning(
-            "Failed to read background_review.enabled; leaving automatic "
-            "review enabled (fail-open)",
+            "Failed to read background_review.enabled; defaulting to disabled "
+            "(fail-closed)",
             exc_info=True,
         )
-        return True, {}
+        return False, {}
 
 
 def is_background_review_enabled(
@@ -293,7 +294,7 @@ def is_background_review_enabled(
 ) -> bool:
     """Return whether automatic post-turn background review may spawn.
 
-    Controlled by ``auxiliary.background_review.enabled`` (default ``true``).
+    Controlled by ``auxiliary.background_review.enabled`` (default ``false``).
     Explicit ``/refine`` (``focus`` set) bypasses this gate — same contract as
     zeroing the nudge intervals, which stops automatic forks but leaves manual
     refine working (issue #87250).
@@ -305,14 +306,14 @@ def is_background_review_enabled(
         try:
             from utils import is_truthy_value
 
-            return is_truthy_value(task_cfg.get("enabled"), default=True)
+            return is_truthy_value(task_cfg.get("enabled"), default=False)
         except Exception:
             logger.warning(
-                "Failed to interpret background_review.enabled; leaving "
-                "automatic review enabled (fail-open)",
+                "Failed to interpret background_review.enabled; defaulting to "
+                "disabled (fail-closed)",
                 exc_info=True,
             )
-            return True
+            return False
     enabled, _ = load_background_review_settings()
     return enabled
 

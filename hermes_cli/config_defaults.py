@@ -1392,7 +1392,7 @@ DEFAULT_CONFIG = {
         "background_review": {
             # Master switch for automatic post-turn memory/skill review forks.
             # false = skip automatic spawns (manual /refine still works).
-            "enabled": True,
+            "enabled": False,
             "provider": "auto",
             "model": "",
             "base_url": "",

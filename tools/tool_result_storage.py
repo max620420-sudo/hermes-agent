@@ -228,15 +228,48 @@ def _safe_result_filename(tool_use_id: str) -> str:
     return f"{safe_stem}.txt"
 
 
-def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
-    """Truncate at last newline within max_chars. Returns (preview, has_more)."""
+def generate_preview(
+    content: str,
+    max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS,
+    tail_chars: int = 0,
+) -> tuple[str, bool]:
+    """Truncate at last newline within max_chars. Returns (preview, has_more).
+
+    With ``tail_chars > 0`` the preview keeps the last ``tail_chars`` of the
+    payload too, separated by an explicit elision marker naming how many
+    characters were dropped from the middle. Used by the subagent budget
+    (tools/budget_config.budget_for_subagent), where a spilled result must stay
+    usable from the preview alone — the end of a run (exit status, totals, the
+    tail of a traceback) is usually where the answer is. ``tail_chars=0``
+    (the default) is the historical head-only behavior, unchanged.
+    """
     if len(content) <= max_chars:
         return content, False
     truncated = content[:max_chars]
     last_nl = truncated.rfind("\n")
     if last_nl > max_chars // 2:
         truncated = truncated[:last_nl + 1]
-    return truncated, True
+
+    if tail_chars <= 0:
+        return truncated, True
+
+    # Only worth a tail if the middle is actually elided; otherwise the head
+    # already covers everything up to the tail and we'd duplicate content.
+    remaining = content[len(truncated):]
+    if len(remaining) <= tail_chars:
+        return truncated + remaining, False
+
+    tail = remaining[-tail_chars:]
+    first_nl = tail.find("\n")
+    if 0 <= first_nl < tail_chars // 2:
+        tail = tail[first_nl + 1:]
+    elided = len(content) - len(truncated) - len(tail)
+    return (
+        f"{truncated}\n"
+        f"... [{elided:,} characters elided from the middle — "
+        f"read the saved file for this section] ...\n"
+        f"{tail}"
+    ), True
 
 
 def _heredoc_marker(content: str) -> str:
@@ -270,6 +303,7 @@ def _build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    has_tail: bool = False,
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -287,10 +321,14 @@ def _build_persisted_message(
         "process it with execute_code — do NOT re-request the same data from the "
         "remote API; the full result is already on disk.\n\n"
     )
-    msg += f"Preview (first {len(preview)} chars):\n"
-    msg += preview
-    if has_more:
-        msg += "\n..."
+    if has_tail:
+        msg += f"Preview ({len(preview)} chars — head + tail, middle elided):\n"
+        msg += preview
+    else:
+        msg += f"Preview (first {len(preview)} chars):\n"
+        msg += preview
+        if has_more:
+            msg += "\n..."
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
 
@@ -345,7 +383,13 @@ def maybe_persist_tool_result(
         return content
 
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    _tail_chars = max(0, getattr(config, "preview_tail_size", 0) or 0)
+    preview, has_more = generate_preview(
+        content, max_chars=config.preview_size, tail_chars=_tail_chars
+    )
+    # Tail actually survived only if the payload was long enough to elide a
+    # middle; generate_preview returns has_more=False when it merged instead.
+    _has_tail = bool(_tail_chars) and has_more
 
     # Always persist host-side first: $HERMES_HOME/cache/spillover is the
     # single canonical home for spilled results (with the other Hermes-owned
@@ -358,7 +402,9 @@ def maybe_persist_tool_result(
                 "Persisted large tool result: %s (%s, %d chars -> %s)",
                 tool_name, tool_use_id, len(content), host_path,
             )
-            return _build_persisted_message(preview, has_more, len(content), host_path)
+            return _build_persisted_message(
+                preview, has_more, len(content), host_path, has_tail=_has_tail
+            )
     elif env is not None:
         # Remote backend: the spillover dir is auto-mounted (docker) or
         # file-synced (modal/ssh/daytona) into the sandbox, so reference the
@@ -370,7 +416,9 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
                     tool_name, tool_use_id, len(content), visible, host_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), visible)
+                return _build_persisted_message(
+                    preview, has_more, len(content), visible, has_tail=_has_tail
+                )
         # Fallback: write into the sandbox temp dir (pre-existing containers
         # without the spillover mount, translation/probe failures).
         storage_dir = _resolve_storage_dir(env)
@@ -381,7 +429,9 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                return _build_persisted_message(
+                    preview, has_more, len(content), remote_path, has_tail=_has_tail
+                )
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 

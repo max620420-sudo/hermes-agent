@@ -2360,6 +2360,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
+        self._session_compaction_rounds = 0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
         self._structural_no_op_backoff_until = 0.0
@@ -2601,6 +2602,45 @@ class ContextCompressor(ContextEngine):
     def threshold_tokens(self, value: int) -> None:
         self._threshold_tokens = value
 
+    # -- Repeat-compaction escalation (same-session runaway context) ------
+    # A long-lived session compacts, lands on an incompressible floor
+    # (system prompt + tool schemas + protected head + verbatim tail), then
+    # regrows past the threshold and pays ANOTHER full summarizer pass to
+    # reclaim less each time -- the observed 186K -> 108K -> 97K ladder.
+    # The anti-thrash breaker never catches it: every pass DOES clear the
+    # threshold, so no ineffective strike is ever recorded.
+    #
+    # Fix: the verbatim tail budget shrinks geometrically with the number of
+    # compactions already completed IN THIS SESSION. The first compaction is
+    # unchanged (small sessions and one-shot compactions keep today's
+    # behavior); the second and later ones retain a progressively smaller
+    # recency window, so the session settles into a fresh, small working
+    # context instead of re-compacting a near-floor transcript forever.
+    # Nothing is deleted: the dropped tail is already represented by the
+    # rolling summary (verbatim user turns, constraints, open work) and stays
+    # recoverable from SessionDB via the summary's session_search pointers.
+    _REPEAT_TAIL_SHRINK = 0.5
+    _REPEAT_TAIL_MIN_TOKENS = 6_000
+    _REPEAT_TAIL_MAX_ROUNDS = 3
+
+    def _escalated_tail_token_budget(self, base: int) -> int:
+        """Apply the same-session repeat-compaction shrink to ``base``."""
+        try:
+            rounds = int(getattr(self, "_session_compaction_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            return base
+        if rounds <= 0 or base <= self._REPEAT_TAIL_MIN_TOKENS:
+            return base
+        factor = self._REPEAT_TAIL_SHRINK ** min(rounds, self._REPEAT_TAIL_MAX_ROUNDS)
+        shrunk = max(self._REPEAT_TAIL_MIN_TOKENS, min(base, int(base * factor)))
+        if shrunk != base and not self.quiet_mode:
+            logger.info(
+                "Repeat-compaction escalation: session already compacted %d "
+                "time(s); verbatim tail budget %d -> %d tokens",
+                rounds, base, shrunk,
+            )
+        return shrunk
+
     @property
     def tail_token_budget(self) -> int:
         if self._tail_token_budget is None:
@@ -2617,7 +2657,7 @@ class ContextCompressor(ContextEngine):
                 )
             else:
                 self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
-        return self._tail_token_budget
+        return self._escalated_tail_token_budget(self._tail_token_budget)
 
     @tail_token_budget.setter
     def tail_token_budget(self, value: int) -> None:
@@ -2664,6 +2704,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
+        self._session_compaction_rounds = 0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
         self._structural_no_op_backoff_until = 0.0
@@ -2690,7 +2731,13 @@ class ContextCompressor(ContextEngine):
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
         self._session_db = session_db
+        _previous_session_id = getattr(self, "_session_id", "") or ""
         self._session_id = session_id or ""
+        # Rebinding the SAME session (the gateway does this every turn) must
+        # KEEP the repeat-compaction escalation; only a real id change is a
+        # session boundary that resets it.
+        if self._session_id != _previous_session_id:
+            self._session_compaction_rounds = 0
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
@@ -2987,6 +3034,13 @@ class ContextCompressor(ContextEngine):
         # lift any pending structural no-op backoff (#93022) alongside the
         # usual bookkeeping.
         self._structural_no_op_backoff_until = 0.0
+        # Same-session boundary counter feeding the repeat-compaction tail
+        # escalation. Counted for every committed boundary, including a
+        # feasibility-skip drop -- the point is "this session has compacted
+        # before", not "the summarizer ran".
+        self._session_compaction_rounds = (
+            int(getattr(self, "_session_compaction_rounds", 0) or 0) + 1
+        )
         self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
             # A deliberate pre-LLM feasibility skip (#60451) is not a
@@ -3637,6 +3691,10 @@ class ContextCompressor(ContextEngine):
         self._summary_has_user_turn: Optional[bool] = None
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
+        # Compactions already completed on the currently bound session.
+        # Drives _escalated_tail_token_budget(); reset at every real session
+        # boundary (on_session_end / on_session_reset / a bound-id change).
+        self._session_compaction_rounds: int = 0
         self._ineffective_compression_count: int = 0
         # Monotonic deadline after which a tripped anti-thrash guard grants
         # one probation probe (#14694). 0.0 = clock not armed. Armed lazily on

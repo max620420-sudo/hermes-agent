@@ -2531,8 +2531,79 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Subagent-only tool-result age-out (#Task5): a delegated child's
+        # in-memory ``messages`` grows every model call exactly like a normal
+        # session, but nobody re-reads a subagent's old tool output once the
+        # run has moved past it. Reuse the SAME active=0/1 semantics the
+        # session DB already uses for compaction (archive_and_compact /
+        # get_messages(active=1)) instead of inventing a new mechanism: stamp
+        # ``active=False`` in place on tool-result messages older than
+        # 4 MODEL turns (Task 5 age-out threshold), then skip them here when
+        # building the outgoing api_messages. Nothing is deleted or
+        # rewritten -- the dict (and its DB row / Task-4 spillover pointer)
+        # stays exactly as-is in ``messages``/history, just excluded from the
+        # NEXT provider request. Only role=="tool" rows are ever touched;
+        # assistant/user messages are untouched. Gated strictly on
+        # platform=="subagent" so main/parent sessions are unaffected.
+        #
+        # "Model turn" boundary is one assistant (role=="assistant") message,
+        # NOT one user message: a subagent run is typically a single initial
+        # user message followed by many assistant<->tool loop iterations
+        # (each iteration is one LLM call = one model turn), so counting
+        # user-role messages would almost never advance and tool results
+        # would never age out. Counting assistant-role messages instead
+        # tracks the real per-model-call cadence of the tool loop.
+        _subagent_aged_out_idxs = set()
+        _subagent_aged_out_call_ids: set = set()
+        if getattr(agent, "platform", "") == "subagent":
+            from agent.message_sanitization import tool_result_id_variants
+
+            _turns_after = 0
+            _newly_aged_call_ids = []
+            for _i in range(len(messages) - 1, -1, -1):
+                _m = messages[_i]
+                _role = _m.get("role")
+                if _role == "tool":
+                    # Task 5 age-out threshold: keep only the last 4 model
+                    # turns active (turns_after in {0,1,2,3}); a tool result
+                    # that has already seen 4 later model turns ages out.
+                    if _turns_after >= 4:
+                        if _m.get("active") is not False:
+                            # First pass that ages this row out — persist the
+                            # same flip to the DB below so a session reload
+                            # cannot resurrect it as active context.
+                            _cid = _m.get("tool_call_id")
+                            if isinstance(_cid, str) and _cid:
+                                _newly_aged_call_ids.append(_cid)
+                        _m["active"] = False
+                        _subagent_aged_out_idxs.add(_i)
+                        _subagent_aged_out_call_ids |= tool_result_id_variants(
+                            _m.get("tool_call_id")
+                        )
+                elif _role == "assistant":
+                    _turns_after += 1
+
+            if _newly_aged_call_ids:
+                # Durable half of the age-out. Never fatal: the in-memory
+                # exclusion already holds for this request, and losing the
+                # persist only means the row is re-aged on the next pass.
+                _sdb = getattr(agent, "_session_db", None)
+                _deactivate = getattr(_sdb, "deactivate_tool_results", None)
+                if callable(_deactivate):
+                    try:
+                        _deactivate(agent.session_id, _newly_aged_call_ids)
+                    except Exception:
+                        request_logger.debug(
+                            "subagent tool-result age-out DB persist failed "
+                            "(session=%s)",
+                            agent.session_id or "-",
+                            exc_info=True,
+                        )
+
         api_messages = []
         for idx, msg in enumerate(messages):
+            if idx in _subagent_aged_out_idxs:
+                continue
 
             # Structural clone, NOT msg.copy(): every in-place transform
             # below (canonicalize/repair, surrogate + non-ASCII sanitizers,
@@ -2560,6 +2631,39 @@ def run_conversation(
             # Bookkeeping, never a provider field — only the chat-completions
             # transport strips underscore keys, so drop it centrally here.
             api_msg.pop("_row_id", None)
+
+            # Pair safety for the subagent tool-result age-out above: an
+            # assistant tool_call whose result was just excluded would reach
+            # the provider dangling. Drop those calls from the OUTGOING copy
+            # only (the durable message keeps them untouched), matching ids
+            # through the same variant policy the orphan sanitizers use so
+            # the id-spelling rules cannot fork. If that empties the message
+            # (scaffolding assistant turn with no text), skip it entirely
+            # rather than sending a contentless assistant turn.
+            if _subagent_aged_out_call_ids and api_msg.get("role") == "assistant":
+                _calls = api_msg.get("tool_calls") or []
+                if _calls:
+                    from agent.message_sanitization import tool_call_id_variants
+
+                    _kept_calls = [
+                        _tc for _tc in _calls
+                        if not (
+                            tool_call_id_variants(_tc) & _subagent_aged_out_call_ids
+                        )
+                    ]
+                    if len(_kept_calls) != len(_calls):
+                        if _kept_calls:
+                            api_msg["tool_calls"] = _kept_calls
+                        else:
+                            api_msg.pop("tool_calls", None)
+                            _txt = api_msg.get("content")
+                            _has_text = (
+                                bool(_txt.strip())
+                                if isinstance(_txt, str)
+                                else bool(_txt)
+                            )
+                            if not _has_text:
+                                continue
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks

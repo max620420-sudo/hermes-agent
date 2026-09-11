@@ -2082,6 +2082,28 @@ def run_conversation(
         except Exception:
             pass
 
+    # Explicit session-handoff snapshot (Task 8-lite, #101-handoff-lite).
+    # ONLY fires on an explicit "starting/moving to a new session" or
+    # "resume the last session" phrase — never on ordinary turn completion
+    # or exit ("작업 끝", "종료할게", "/exit" don't match). See
+    # agent/handoff_snapshot.py for the trigger patterns and the no-new-LLM-
+    # call snapshot construction. Best-effort: never raises into the turn.
+    if isinstance(user_message, str) and user_message:
+        try:
+            from agent.handoff_snapshot import maybe_handle_handoff_intent
+
+            _annotated_message = maybe_handle_handoff_intent(agent, user_message)
+            if _annotated_message is not user_message:
+                # Only the MODEL-facing message gets the resumed-snapshot
+                # note prepended; the persisted/displayed transcript keeps
+                # the user's original words unless a caller already chose
+                # otherwise.
+                if persist_user_message is None:
+                    persist_user_message = user_message
+                user_message = _annotated_message
+        except Exception:
+            logger.debug("handoff snapshot intent check failed", exc_info=True)
+
     # The gateway caches agents across user turns.  Compression state is
     # per-turn: carrying a prior in-place boundary forward would make a later
     # uncompressed result look like a compacted transcript to gateway writers.

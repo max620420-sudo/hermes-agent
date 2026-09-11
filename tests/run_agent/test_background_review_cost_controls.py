@@ -164,9 +164,10 @@ def test_digest_records_tool_names_in_arc():
 # Cost / configurability controls (issue #87250)
 # ---------------------------------------------------------------------------
 
-def test_enabled_defaults_true():
+def test_enabled_defaults_false():
+    """Fail-closed: no ``enabled`` key anywhere means automatic review stays OFF."""
     with patch("hermes_cli.config.load_config_readonly", return_value={}):
-        assert br.load_background_review_settings()[0] is True
+        assert br.load_background_review_settings()[0] is False
 
 
 def test_enabled_false_disables_automatic_review():

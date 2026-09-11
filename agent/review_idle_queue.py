@@ -165,13 +165,13 @@ class ReviewIdleQueue:
 
     @staticmethod
     def _still_enabled(item: _PendingReview) -> bool:
-        """Re-check the enabled gate at DISPATCH time (disabling reviews while queued must stick). Fail-open."""
+        """Re-check the enabled gate at DISPATCH time (disabling reviews while queued must stick). Fail-closed."""
         try:
             from agent.background_review import load_background_review_settings
 
             return load_background_review_settings()[0]
         except Exception:  # noqa: BLE001
-            return True
+            return False
 
 
 def _managed_server_idle() -> bool:

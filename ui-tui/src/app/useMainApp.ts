@@ -53,7 +53,12 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import {
+  $overlayState,
+  claimVaultCodePrompt,
+  patchOverlayState,
+  submitVaultSaveLoginPrompt
+} from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -647,7 +652,13 @@ export function useMainApp(gw: GatewayClient) {
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
   const marker =
-    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+    overlay.approval ||
+    overlay.sudo ||
+    overlay.secret ||
+    overlay.vaultCode ||
+    overlay.vaultSaveLogin ||
+    overlay.vaultUnlock ||
+    overlay.clarify
       ? '⚠'
       : ui.busy
         ? '⏳'
@@ -1090,6 +1101,53 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.vaultUnlock, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (value: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const submission = submitVaultSaveLoginPrompt(
+        overlay.vaultSaveLogin.requestId,
+        overlay.vaultSaveLogin.step,
+        value
+      )
+
+      if (!submission || submission.kind === 'continue') {
+        return
+      }
+
+      return respondWith(
+        'vault.save_login.respond',
+        {
+          login: submission.kind === 'respond' ? submission.login : '',
+          request_id: submission.requestId
+        },
+        () => patchUiState({ status: 'running…' })
+      )
+    },
+    [overlay.vaultSaveLogin, respondWith]
+  )
+
+  const answerVaultCode = useCallback(
+    (code: string) => {
+      if (!overlay.vaultCode) {
+        return
+      }
+
+      const requestId = overlay.vaultCode.requestId
+
+      if (!claimVaultCodePrompt(requestId)) {
+        return
+      }
+
+      return respondWith('vault.code.respond', { code, request_id: requestId }, () =>
+        patchUiState({ status: 'running…' })
+      )
+    },
+    [overlay.vaultCode, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1200,6 +1258,8 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultCode,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1224,6 +1284,8 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultCode,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

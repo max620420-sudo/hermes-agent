@@ -1338,6 +1338,48 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'vault.save_login.request':
+        patchOverlayState({
+          vaultSaveLogin: {
+            identifier: '',
+            origin: ev.payload.origin,
+            requestId: ev.payload.request_id,
+            site: ev.payload.site,
+            step: 'identifier'
+          }
+        })
+        setStatus('login details needed')
+        ringPromptBell()
+
+        return
+
+      case 'vault.save_login.expire':
+        patchOverlayState(prev =>
+          prev.vaultSaveLogin?.requestId === ev.payload.request_id ? { ...prev, vaultSaveLogin: null } : prev
+        )
+
+        return
+
+      case 'vault.code.request':
+        patchOverlayState({
+          vaultCode: {
+            hint: ev.payload.hint,
+            requestId: ev.payload.request_id,
+            site: ev.payload.site
+          }
+        })
+        setStatus('verification code needed')
+        ringPromptBell()
+
+        return
+
+      case 'vault.code.expire':
+        patchOverlayState(prev =>
+          prev.vaultCode?.requestId === ev.payload.request_id ? { ...prev, vaultCode: null } : prev
+        )
+
+        return
+
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)

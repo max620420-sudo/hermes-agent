@@ -250,6 +250,20 @@ export interface VaultUnlockReq {
   requestId: string
 }
 
+export interface VaultSaveLoginReq {
+  identifier: string
+  origin: string
+  requestId: string
+  site: string
+  step: 'identifier' | 'password'
+}
+
+export interface VaultCodeReq {
+  hint?: string
+  requestId: string
+  site: string
+}
+
 export interface PanelData {
   sections: PanelSection[]
   title: string

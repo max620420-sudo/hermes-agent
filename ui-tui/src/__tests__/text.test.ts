@@ -13,12 +13,23 @@ import {
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
+  safePromptText,
   sameToolTrailGroup,
   sanitizeAnsiForRender,
   splitToolDuration,
   stripAnsi,
   thinkingPreview
 } from '../lib/text.js'
+
+describe('safePromptText', () => {
+  it('removes terminal controls, bidi controls and line breaks from security labels', () => {
+    expect(safePromptText('safe\u001b[2J\n\u202Eevil.example')).toBe('safe evil.example')
+  })
+
+  it('bounds attacker-controlled security labels', () => {
+    expect(safePromptText('x'.repeat(200), 12)).toBe('xxxxxxxxxxx…')
+  })
+})
 
 describe('isToolTrailResultLine', () => {
   it('detects completion markers', () => {

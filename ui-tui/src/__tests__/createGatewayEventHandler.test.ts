@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import * as overlayStore from '../app/overlayStore.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -1654,6 +1655,76 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
     expect(getOverlayState().sudo).toBeNull()
+  })
+
+  it('opens a login-saving prompt when the vault asks for credentials', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { origin: 'https://example.com', request_id: 'vault-save-1', site: 'example.com' },
+      type: 'vault.save_login.request'
+    } as any)
+
+    expect((getOverlayState() as any).vaultSaveLogin).toEqual({
+      identifier: '',
+      origin: 'https://example.com',
+      requestId: 'vault-save-1',
+      site: 'example.com',
+      step: 'identifier'
+    })
+    expect(getUiState().status).toBe('login details needed')
+
+    onEvent({ payload: { request_id: 'vault-save-1' }, type: 'vault.save_login.expire' } as any)
+    expect((getOverlayState() as any).vaultSaveLogin).toBeNull()
+  })
+
+  it('keeps the identifier visible locally, then returns one model-blind login payload', () => {
+    const submit = (overlayStore as any).vaultSaveLoginSubmission
+
+    const initial = {
+      identifier: '',
+      origin: 'https://example.com',
+      requestId: 'vault-save-1',
+      site: 'example.com',
+      step: 'identifier'
+    }
+
+    expect(typeof submit).toBe('function')
+    expect(submit(initial, ' employee ')).toEqual({
+      kind: 'continue',
+      next: { ...initial, identifier: 'employee', step: 'password' }
+    })
+    expect(submit({ ...initial, identifier: 'employee', step: 'password' }, 'vault-secret')).toEqual({
+      kind: 'respond',
+      login: JSON.stringify({ identifier: 'employee', password: 'vault-secret' }),
+      requestId: 'vault-save-1'
+    })
+    expect(submit(initial, '   ')).toEqual({ kind: 'cancel', requestId: 'vault-save-1' })
+    expect(submit({ ...initial, identifier: 'employee', step: 'password' }, '')).toEqual({
+      kind: 'cancel',
+      requestId: 'vault-save-1'
+    })
+  })
+
+  it('opens and expires the matching one-time-code prompt', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { hint: 'email', request_id: 'vault-code-1', site: 'example.com' },
+      type: 'vault.code.request'
+    } as any)
+
+    expect((getOverlayState() as any).vaultCode).toEqual({
+      hint: 'email',
+      requestId: 'vault-code-1',
+      site: 'example.com'
+    })
+
+    onEvent({ payload: { request_id: 'vault-code-other' }, type: 'vault.code.expire' } as any)
+    expect((getOverlayState() as any).vaultCode?.requestId).toBe('vault-code-1')
+
+    onEvent({ payload: { request_id: 'vault-code-1' }, type: 'vault.code.expire' } as any)
+    expect((getOverlayState() as any).vaultCode).toBeNull()
   })
 
   // ── Batch (multi-question) clarify ─────────────────────────────────

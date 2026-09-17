@@ -5,7 +5,7 @@ import type { Theme } from '../theme.js'
 
 import { TextInput } from './textInput.js'
 
-export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: MaskedPromptProps) {
+export function MaskedPrompt({ cols = 80, icon, label, masked = true, onSubmit, sub, t }: MaskedPromptProps) {
   const [value, setValue] = useState('')
 
   return (
@@ -21,7 +21,7 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: Maske
         <TextInput
           color={t.color.text}
           columns={Math.max(20, cols - 6)}
-          mask="*"
+          mask={masked ? '*' : undefined}
           onChange={setValue}
           onSubmit={onSubmit}
           value={value}
@@ -35,6 +35,7 @@ interface MaskedPromptProps {
   cols?: number
   icon: string
   label: string
+  masked?: boolean
   onSubmit: (v: string) => void
   sub?: string
   t: Theme

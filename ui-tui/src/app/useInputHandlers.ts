@@ -26,7 +26,13 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import {
+  $isBlocked,
+  $overlayState,
+  claimVaultCodePrompt,
+  claimVaultSaveLoginPrompt,
+  patchOverlayState
+} from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -143,7 +149,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultCode' | 'vaultSaveLogin' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
@@ -163,6 +169,31 @@ export function dismissSensitivePrompt(
     sys('secret entry cancelled')
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+
+  if (overlay.vaultCode) {
+    const requestId = overlay.vaultCode.requestId
+
+    if (!claimVaultCodePrompt(requestId)) {
+      return
+    }
+
+    sys('verification code entry cancelled')
+
+    return rpc<SecretRespondResponse>('vault.code.respond', { code: '', request_id: requestId })
+  }
+
+  if (overlay.vaultSaveLogin) {
+    const requestId = overlay.vaultSaveLogin.requestId
+    const step = overlay.vaultSaveLogin.step
+
+    if (!claimVaultSaveLoginPrompt(requestId, step)) {
+      return
+    }
+
+    sys('login save cancelled')
+
+    return rpc<SecretRespondResponse>('vault.save_login.respond', { login: '', request_id: requestId })
   }
 
   if (overlay.vaultUnlock) {
@@ -233,7 +264,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
+    if (overlay.sudo || overlay.secret || overlay.vaultCode || overlay.vaultSaveLogin || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -490,7 +521,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
+      if (
+        isCtrl(key, ch, 'c') ||
+        (key.escape && (overlay.secret || overlay.sudo || overlay.vaultCode || overlay.vaultSaveLogin || overlay.vaultUnlock))
+      ) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

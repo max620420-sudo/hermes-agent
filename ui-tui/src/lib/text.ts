@@ -32,6 +32,19 @@ export const stripAnsi = (s: string) =>
     .replace(ANSI_STRAY_ESC_RE, '')
     .replace(CONTROL_RE, '')
 
+export const safePromptText = (value: string, maxChars = 120) => {
+  const cleaned = stripAnsi(String(value).replace(/\r\n?|\n/g, ' '))
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .replace(WS_RE, ' ')
+    .trim()
+
+  if (cleaned.length <= maxChars) {
+    return cleaned
+  }
+
+  return `${cleaned.slice(0, Math.max(0, maxChars - 1))}…`
+}
+
 export const sanitizeAnsiForRender = (s: string) =>
   s
     .replace(ANSI_OSC_RE, '')

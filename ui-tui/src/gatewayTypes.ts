@@ -777,6 +777,21 @@ export type GatewayEvent =
       session_id?: string
       type: 'vault.unlock.request'
     }
+  | {
+      payload: { origin: string; request_id: string; site: string }
+      session_id?: string
+      type: 'vault.save_login.request'
+    }
+  | {
+      payload: { hint?: string; request_id: string; site: string }
+      session_id?: string
+      type: 'vault.code.request'
+    }
+  | {
+      payload: { request_id: string }
+      session_id?: string
+      type: 'vault.code.expire' | 'vault.save_login.expire'
+    }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload: { question?: string; task_id: string; text: string }; session_id?: string; type: 'btw.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }

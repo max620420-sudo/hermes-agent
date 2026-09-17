@@ -1,7 +1,34 @@
 import { atom, computed } from 'nanostores'
 
+import type { VaultSaveLoginReq } from '../types.js'
+
 import type { OverlayState } from './interfaces.js'
 import { $uiState } from './uiStore.js'
+
+export type VaultSaveLoginSubmission =
+  | { kind: 'cancel'; requestId: string }
+  | { kind: 'continue'; next: VaultSaveLoginReq }
+  | { kind: 'respond'; login: string; requestId: string }
+
+export function vaultSaveLoginSubmission(req: VaultSaveLoginReq, value: string): VaultSaveLoginSubmission {
+  if (!value) {
+    return { kind: 'cancel', requestId: req.requestId }
+  }
+
+  if (req.step === 'identifier') {
+    const identifier = value.trim()
+
+    return identifier
+      ? { kind: 'continue', next: { ...req, identifier, step: 'password' } }
+      : { kind: 'cancel', requestId: req.requestId }
+  }
+
+  return {
+    kind: 'respond',
+    login: JSON.stringify({ identifier: req.identifier, password: value }),
+    requestId: req.requestId
+  }
+}
 
 const buildOverlayState = (): OverlayState => ({
   agents: false,
@@ -18,6 +45,8 @@ const buildOverlayState = (): OverlayState => ({
   petPicker: false,
   pluginsHub: false,
   secret: null,
+  vaultCode: null,
+  vaultSaveLogin: null,
   vaultUnlock: null,
   sessions: false,
   skillsHub: false,
@@ -45,6 +74,8 @@ export const $isBlocked = computed(
     skillsHub,
     subscription,
     sudo,
+    vaultCode,
+    vaultSaveLogin,
     vaultUnlock,
     widget
   }) =>
@@ -64,6 +95,8 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
+      vaultCode ||
+      vaultSaveLogin ||
       vaultUnlock ||
       widget
     )
@@ -138,6 +171,68 @@ export const getOverlayState = () => $overlayState.get()
 
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
   $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
+
+export const advanceVaultSaveLoginPrompt = (next: VaultSaveLoginReq) =>
+  patchOverlayState(prev =>
+    prev.vaultSaveLogin?.requestId === next.requestId ? { ...prev, vaultSaveLogin: next } : prev
+  )
+
+export const claimVaultSaveLoginPrompt = (requestId: string, step: VaultSaveLoginReq['step']): boolean => {
+  let claimed = false
+
+  patchOverlayState(prev => {
+    if (prev.vaultSaveLogin?.requestId !== requestId || prev.vaultSaveLogin.step !== step) {
+      return prev
+    }
+
+    claimed = true
+
+    return { ...prev, vaultSaveLogin: null }
+  })
+
+  return claimed
+}
+
+export const submitVaultSaveLoginPrompt = (
+  requestId: string,
+  step: VaultSaveLoginReq['step'],
+  value: string
+): null | VaultSaveLoginSubmission => {
+  let submission: null | VaultSaveLoginSubmission = null
+
+  patchOverlayState(prev => {
+    const request = prev.vaultSaveLogin
+
+    if (!request || request.requestId !== requestId || request.step !== step) {
+      return prev
+    }
+
+    submission = vaultSaveLoginSubmission(request, value)
+
+    return {
+      ...prev,
+      vaultSaveLogin: submission.kind === 'continue' ? submission.next : null
+    }
+  })
+
+  return submission
+}
+
+export const claimVaultCodePrompt = (requestId: string): boolean => {
+  let claimed = false
+
+  patchOverlayState(prev => {
+    if (prev.vaultCode?.requestId !== requestId) {
+      return prev
+    }
+
+    claimed = true
+
+    return { ...prev, vaultCode: null }
+  })
+
+  return claimed
+}
 
 /** Full reset — used by session/turn teardown and tests. */
 export const resetOverlayState = () => $overlayState.set(buildOverlayState())

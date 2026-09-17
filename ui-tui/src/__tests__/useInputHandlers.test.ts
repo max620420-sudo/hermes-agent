@@ -156,6 +156,105 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
+  it('ignores a stale verification-code cancellation after the prompt is replaced', async () => {
+    resetOverlayState()
+    patchOverlayState({ vaultCode: { requestId: 'code-a', site: 'old.example' } })
+    const staleOverlay = getOverlayState()
+
+    patchOverlayState({ vaultCode: { requestId: 'code-b', site: 'new.example' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+
+    await dismissSensitivePrompt(staleOverlay, rpc, vi.fn())
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(getOverlayState().vaultCode?.requestId).toBe('code-b')
+  })
+
+  it('ignores a stale login-save cancellation after the prompt is replaced', async () => {
+    resetOverlayState()
+    patchOverlayState({
+      vaultSaveLogin: {
+        identifier: 'old-user',
+        origin: 'https://old.example',
+        requestId: 'save-a',
+        site: 'old.example',
+        step: 'password'
+      }
+    })
+    const staleOverlay = getOverlayState()
+
+    patchOverlayState({
+      vaultSaveLogin: {
+        identifier: 'new-user',
+        origin: 'https://new.example',
+        requestId: 'save-b',
+        site: 'new.example',
+        step: 'password'
+      }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+
+    await dismissSensitivePrompt(staleOverlay, rpc, vi.fn())
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(getOverlayState().vaultSaveLogin?.requestId).toBe('save-b')
+  })
+
+  it('ignores a stale login-save cancellation after the same request changes phase', async () => {
+    resetOverlayState()
+    patchOverlayState({
+      vaultSaveLogin: {
+        identifier: '',
+        origin: 'https://example.com',
+        requestId: 'save-a',
+        site: 'example.com',
+        step: 'identifier'
+      }
+    })
+    const staleOverlay = getOverlayState()
+
+    patchOverlayState({
+      vaultSaveLogin: {
+        identifier: 'employee',
+        origin: 'https://example.com',
+        requestId: 'save-a',
+        site: 'example.com',
+        step: 'password'
+      }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+
+    await dismissSensitivePrompt(staleOverlay, rpc, vi.fn())
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(getOverlayState().vaultSaveLogin).toMatchObject({
+      identifier: 'employee',
+      requestId: 'save-a',
+      step: 'password'
+    })
+  })
+
+  it('cancels the visible code prompt before a hidden login-save prompt', async () => {
+    resetOverlayState()
+    patchOverlayState({
+      vaultCode: { hint: 'email', requestId: 'vault-code-1', site: 'example.com' },
+      vaultSaveLogin: {
+        identifier: 'employee',
+        origin: 'https://example.com',
+        requestId: 'vault-save-1',
+        site: 'example.com',
+        step: 'password'
+      }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+
+    await dismissSensitivePrompt(getOverlayState(), rpc, vi.fn())
+
+    expect(rpc).toHaveBeenCalledWith('vault.code.respond', { code: '', request_id: 'vault-code-1' })
+    expect(getOverlayState().vaultCode).toBeNull()
+    expect(getOverlayState().vaultSaveLogin?.requestId).toBe('vault-save-1')
+  })
+
   it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
@@ -181,6 +280,42 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
+  })
+
+  it('cancels a vault login prompt without sending credentials', async () => {
+    resetOverlayState()
+    patchOverlayState({
+      vaultSaveLogin: {
+        identifier: 'employee',
+        origin: 'https://example.com',
+        requestId: 'vault-save-1',
+        site: 'example.com',
+        step: 'password'
+      }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login save cancelled')
+    expect(rpc).toHaveBeenCalledWith('vault.save_login.respond', { login: '', request_id: 'vault-save-1' })
+    await pending
+  })
+
+  it('cancels a one-time-code prompt without exposing the code', async () => {
+    resetOverlayState()
+    patchOverlayState({ vaultCode: { hint: 'email', requestId: 'vault-code-1', site: 'example.com' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().vaultCode).toBeNull()
+    expect(sys).toHaveBeenCalledWith('verification code entry cancelled')
+    expect(rpc).toHaveBeenCalledWith('vault.code.respond', { code: '', request_id: 'vault-code-1' })
     await pending
   })
 })

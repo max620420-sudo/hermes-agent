@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { safePromptText } from '../lib/text.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -22,6 +23,10 @@ import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
+
+export const vaultCodePromptKey = (requestId: string) => `vault-code:${requestId}`
+export const vaultSaveLoginPromptKey = (requestId: string, step: 'identifier' | 'password') =>
+  `vault-save-login:${requestId}:${step}`
 
 /**
  * A prompt hosted in a single-cell WidgetGrid with the classic 1-cell padding.
@@ -62,6 +67,8 @@ export function PromptZone({
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
+  onVaultCodeSubmit,
+  onVaultSaveLoginSubmit,
   onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
@@ -71,6 +78,8 @@ export function PromptZone({
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
+  | 'onVaultCodeSubmit'
+  | 'onVaultSaveLoginSubmit'
   | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
@@ -165,6 +174,53 @@ export function PromptZone({
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
           sub={`for ${overlay.secret.envVar}`}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultCode) {
+    const code = overlay.vaultCode
+    const site = safePromptText(code.site ?? '') || 'this site'
+    const hint = safePromptText(code.hint || '') || 'text message, email or authenticator app'
+
+    return (
+      <PromptCell cols={cols} id="vault-code">
+        <MaskedPrompt
+          cols={cols}
+          icon="🔐"
+          key={vaultCodePromptKey(code.requestId)}
+          label={`Verification code for ${site}`}
+          masked={false}
+          onSubmit={onVaultCodeSubmit}
+          sub={`${hint} · shown as you type · Esc cancels`}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultSaveLogin) {
+    const save = overlay.vaultSaveLogin
+    const identifierStep = save.step === 'identifier'
+    const origin = safePromptText(save.origin ?? '') || 'this origin'
+    const site = safePromptText(save.site ?? '') || 'this site'
+
+    return (
+      <PromptCell cols={cols} id="vault-save-login">
+        <MaskedPrompt
+          cols={cols}
+          icon="🔐"
+          key={vaultSaveLoginPromptKey(save.requestId, save.step)}
+          label={identifierStep ? `Save login for ${site}` : `Password for ${site}`}
+          masked={!identifierStep}
+          onSubmit={onVaultSaveLoginSubmit}
+          sub={
+            identifierStep
+              ? 'email or username · shown as you type · Enter to continue · Esc cancels'
+              : `hidden · encrypted locally · bound to ${origin} · Esc cancels`
+          }
           t={theme}
         />
       </PromptCell>

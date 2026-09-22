@@ -288,6 +288,12 @@ def _yaml(rel: str) -> dict:
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8"))
 
 
+def test_all_checks_gate_rejects_cancelled_jobs():
+    source = (_REPO / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+
+    assert "info['result'] not in ('success', 'skipped')" in source
+
+
 def test_every_lane_reaches_the_composite_action():
     """The action is the one surface every consumer reads, so it must carry all
     of them — ci.yaml, nix.yml and docker.yml each re-export a different subset.

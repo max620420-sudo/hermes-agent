@@ -24,7 +24,8 @@ jobs:
     # Larger runners are configured only in the upstream repository. Forks
     # fall back to a standard hosted runner instead of waiting forever.
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    # The standard fork runner needs longer for the unsliced 40k+ test suite.
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 30 || 60 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

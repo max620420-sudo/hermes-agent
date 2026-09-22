@@ -571,6 +571,11 @@ def _message_phase(item: Any) -> str | None:
     return phase.strip().lower() if isinstance(phase, str) else None
 
 
+_CODEX_TERMINAL_EVENT_TYPES = frozenset({
+    "response.completed", "response.incomplete", "response.failed",
+})
+
+
 def _output_text_of(item: Any) -> str:
     """Concatenated ``output_text`` parts of a message item ("" if content is not a list)."""
     content_parts = _event_field(item, "content", [])
@@ -1000,6 +1005,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_stream_created=_codex_stream_created, on_chunk=intercepted_events.append,
                     chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_codex_chunk,
                     completed_response_predicate=lambda r: bool(hasattr(r, "output") and not hasattr(r, "__iter__")),
+                    terminal_chunk_predicate=lambda event: (
+                        _event_field(event, "type", "") in _CODEX_TERMINAL_EVENT_TYPES
+                    ),
                     metadata={"api_mode": "codex_responses", "call_role": call_role, "retry_count": attempt,
                               "api_request_id": getattr(agent, "_current_api_request_id", None)},
                     defer_logical_completion=True,

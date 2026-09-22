@@ -758,6 +758,49 @@ def test_explicit_stream_close_surfaces_provider_close_failure(relay_turn):
     stream.close()
 
 
+def test_stream_terminal_predicate_finishes_managed_provider_without_waiting_for_eof(relay_turn):
+    del relay_turn
+
+    terminal = {"type": "response.completed", "response": {"status": "completed"}}
+
+    class NeverEofStream:
+        def __init__(self):
+            self._events = iter([{"type": "response.output_text.delta", "delta": "done"}, terminal])
+            self.close_calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise AssertionError("managed provider read again after terminal frame") from None
+
+        def close(self):
+            self.close_calls += 1
+
+    raw_stream = NeverEofStream()
+    finalized = []
+    stream = relay_llm.stream(
+        {"model": "test-model", "input": []},
+        lambda _request: raw_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: finalized.append("done") or {"status": "completed"},
+        terminal_chunk_predicate=lambda chunk: chunk.get("type") == "response.completed",
+        metadata={"api_mode": "codex_responses", "api_request_id": "request-terminal"},
+    )
+
+    assert list(stream) == [
+        {"type": "response.output_text.delta", "delta": "done"},
+        terminal,
+    ]
+    assert finalized == ["done"]
+    assert raw_stream.close_calls == 1
+
+
 
 
 def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn):

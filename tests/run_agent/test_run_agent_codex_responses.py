@@ -963,22 +963,16 @@ def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):
 
 
 
-def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fails(
-    monkeypatch, caplog
+def test_run_codex_stream_stops_at_terminal_response_without_waiting_for_transport_eof(
+    monkeypatch,
 ):
-    """Regression test for issue #74310.
+    """A Responses terminal frame is the protocol boundary even when the HTTP body stays open.
 
-    A transport error while draining the SSE iterator *after* a valid
-    ``response.completed`` has already been observed (and the response
-    object fully assembled) must NOT discard that response and retry with
-    a brand-new physical request -- that would silently duplicate an
-    already-billed inference. Only errors that occur BEFORE a terminal
-    event is captured should trigger the retry-with-new-request path.
+    Some Codex routes keep the SSE connection alive after ``response.completed``. Reading the
+    iterator again used to wedge the turn in the post-terminal Relay drain. The terminal event
+    must still be delivered and assembled, while the provider resource is closed without a
+    duplicate physical request.
     """
-    import logging
-
-    import httpx
-
     agent = _build_agent(monkeypatch)
 
     message_item = SimpleNamespace(
@@ -988,14 +982,12 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
 
-    class _PostTerminalDroppingStream(_FakeCreateStream):
-        """Yields events normally, then raises only on the *next* pull --
-        i.e. after ``response.completed`` has already been consumed and the
-        event-driven parser has broken out of its loop."""
+    class _PostTerminalNeverEofStream(_FakeCreateStream):
+        """Any pull after the terminal frame represents the production hang."""
 
         def __iter__(self):
             yield from super().__iter__()
-            raise httpx.RemoteProtocolError("connection dropped during drain")
+            raise AssertionError("Codex stream read again after response.completed")
 
     events = [
         SimpleNamespace(type="response.output_item.done", item=message_item),
@@ -1010,15 +1002,17 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     ]
 
     calls = {"count": 0}
+    streams = []
 
     def _fake_create(**kwargs):
         calls["count"] += 1
-        return _PostTerminalDroppingStream(events)
+        stream = _PostTerminalNeverEofStream(events)
+        streams.append(stream)
+        return stream
 
     agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
 
-    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
-        response = agent._run_codex_stream(_codex_request_kwargs())
+    response = agent._run_codex_stream(_codex_request_kwargs())
 
     # Only ONE physical request was ever opened -- the drain failure did not
     # trigger a second call to responses.create(stream=True).
@@ -1026,9 +1020,7 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     assert response.status == "completed"
     assert response.usage is usage
     assert response.id == "resp_post_terminal_1"
-    assert any(
-        "finalization" in record.message for record in caplog.records
-    )
+    assert streams[0].closed is True
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

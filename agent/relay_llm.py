@@ -281,6 +281,7 @@ class ManagedLlmStream(Iterator[Any]):
         on_stream_created: Callable[[Any], None] | None = None, on_chunk: Callable[[Any], None] | None = None,
         chunk_adapter: Callable[[Any], Any] | None = None, accept_chunk: Callable[[Any], bool] | None = None,
         completed_response_predicate: Callable[[Any], bool] | None = None,
+        terminal_chunk_predicate: Callable[[Any], bool] | None = None,
         metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
     ) -> None:
         self._defer_logical_completion = defer_logical_completion
@@ -290,6 +291,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._on_chunk, self._chunk_adapter, self._accept_chunk = on_chunk, chunk_adapter or _namespace, accept_chunk
         self._stream_factory, self._on_stream_created, self._finalizer = stream_factory, on_stream_created, finalizer
         self._completed_response_predicate = completed_response_predicate
+        self._terminal_chunk_predicate = terminal_chunk_predicate
         self._raw_chunks: list[tuple[Any, Any]] = []
         self._prefetched_chunks: list[Any] = []
         attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
@@ -332,9 +334,14 @@ class ManagedLlmStream(Iterator[Any]):
                     break
                 if self._accept_chunk is not None and not run_callback(self._accept_chunk, chunk):
                     break
+                terminal = self._terminal_chunk_predicate is not None and run_callback(
+                    self._terminal_chunk_predicate, chunk
+                )
                 encoded_chunk = _jsonable(chunk)
                 self._raw_chunks.append((encoded_chunk, chunk))
                 yield encoded_chunk
+                if terminal:
+                    break
             self._provider_completed = True
         except BaseException as exc:
             self._callback_error = exc
@@ -433,6 +440,8 @@ class ManagedLlmStream(Iterator[Any]):
             if chunk is self or (self._accept_chunk is not None and not self._accept_chunk(chunk)):
                 self._close(logical_outcome="cancelled")
                 raise StopIteration
+            if self._terminal_chunk_predicate is not None and self._terminal_chunk_predicate(chunk):
+                self._close(logical_outcome="success")
             return chunk
 
         async def next_chunk() -> Any:

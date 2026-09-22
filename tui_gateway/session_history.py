@@ -266,7 +266,14 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    session["inflight_turn"] = {
+        "assistant": "",
+        "started_at": now,
+        "started_monotonic": time.monotonic(),
+        "streaming": True,
+        "updated_at": now,
+        "user": _inflight_text(text),
+    }
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:

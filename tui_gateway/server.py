@@ -1956,6 +1956,17 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    with contextlib.suppress(Exception):
+        _fhist = [float(v) for v in (getattr(agent, "_first_visible_response_history", []) or [])]
+        _latest_raw = getattr(agent, "_last_first_visible_response_s", None)
+        if _latest_raw is not None:
+            _latest = float(_latest_raw)
+            if _latest == _latest and 0 <= _latest < 1e6:
+                usage["first_response_s"] = round(_latest, 1)
+        if _fhist:
+            _avg_first = sum(_fhist[-10:]) / len(_fhist[-10:])
+            if _avg_first == _avg_first and 0 <= _avg_first < 1e6:
+                usage["avg_first_response_s"] = round(_avg_first, 1)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

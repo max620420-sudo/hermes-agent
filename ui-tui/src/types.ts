@@ -211,6 +211,8 @@ export interface SessionInfo {
 
 export interface Usage {
   active_subagents?: number
+  /** Rolling mean time to first visible assistant response over the last 10 turns. */
+  avg_first_response_s?: number
   /** Rolling mean API latency over the last 10 calls (seconds). */
   avg_latency_s?: number
   /** Rolling output tokens/sec over the last 10 calls. */
@@ -227,6 +229,8 @@ export interface Usage {
   cost_status?: string
   cost_usd?: number
   dev_credits_spent_micros?: number
+  /** Most recent turn's time to first visible assistant response. */
+  first_response_s?: number
   input: number
   output: number
   reasoning?: number

@@ -78,6 +78,47 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
+def _mark_first_visible_response(sid: str, event_kind: str) -> float | None:
+    """Record the first non-blank assistant text shown for the active turn."""
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if not isinstance(session, dict):
+        return None
+    with session["history_lock"]:
+        inflight = session.get("inflight_turn")
+        if not isinstance(inflight, dict) or "first_visible_response_s" in inflight:
+            return None
+        try:
+            started_monotonic = inflight.get("started_monotonic")
+            if isinstance(started_monotonic, (int, float)) and not isinstance(started_monotonic, bool):
+                latency = max(0.0, time.monotonic() - float(started_monotonic))
+            else:
+                latency = max(0.0, time.time() - float(inflight["started_at"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        latency = round(latency, 3)
+        inflight["first_visible_response_s"] = latency
+        agent = session.get("agent")
+        if agent is not None:
+            history = list(getattr(agent, "_first_visible_response_history", []) or [])[-9:]
+            history.append(latency)
+            agent._first_visible_response_history = history
+            agent._last_first_visible_response_s = latency
+    logger.info(
+        "TUI first visible assistant response: session=%s seconds=%.3f event=%s",
+        session.get("session_key") or sid, latency, event_kind)
+    return latency
+
+
+def _emit_interim_assistant(sid: str, text, *, already_streamed: bool = False) -> None:
+    normalized = str(text)
+    if normalized.strip():
+        _mark_first_visible_response(sid, "message.interim")
+    _emit(
+        "message.interim", sid,
+        {"text": normalized, "already_streamed": bool(already_streamed)})
+
+
 def _agent_cbs(sid: str) -> dict:
     def _read_block(event: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): blocking bridge like clarify; the preview
@@ -121,8 +162,8 @@ def _agent_cbs(sid: str) -> dict:
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
-        callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+        callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit_interim_assistant(
+            sid, text, already_streamed=already_streamed)
     return callbacks
 
 

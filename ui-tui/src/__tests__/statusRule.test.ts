@@ -63,6 +63,7 @@ describe('statusBarSegments', () => {
     const s = statusBarSegments(120)
 
     expect(s).toEqual({
+      apiCalls: true,
       compactCtx: false,
       bar: true,
       duration: true,
@@ -71,6 +72,7 @@ describe('statusBarSegments', () => {
       bg: true,
       subagents: true,
       cacheHit: true,
+      firstResponse: true,
       latency: true,
       tps: true
     } satisfies StatusBarSegments)

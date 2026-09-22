@@ -509,6 +509,8 @@ def _invoke_agent(
     agent = st.agent
 
     def _stream(delta):
+        if isinstance(delta, str) and delta.strip():
+            _mark_first_visible_response(sid, "message.delta")
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -521,7 +523,7 @@ def _invoke_agent(
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _emit_interim_assistant(sid, text, already_streamed=already_streamed)
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -619,11 +621,15 @@ def _absorb_turn_result(
     return status_note
 
 
-def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
+def _complete_turn_payload(sid: str, session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
     raw, status, last_reasoning = _turn_outcome(result)
+    assistant_text = result.get("final_response", "") if isinstance(result, dict) else result
+    if (isinstance(raw, str) and raw.strip()
+            and isinstance(assistant_text, str) and assistant_text.strip()):
+        _mark_first_visible_response(sid, "message.complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
         payload["reasoning"] = last_reasoning
@@ -841,7 +847,7 @@ def _run_prompt_submit(
                 display_metadata, turn_author)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload, raw, status = _complete_turn_payload(sid, session, st, status_note, cols)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":

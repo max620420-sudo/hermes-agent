@@ -303,12 +303,14 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
 // breakpoint the context read-out collapses to a bare token count. Status and
 // model are never gated here — they're guaranteed room by `statusRuleWidths`.
 export interface StatusBarSegments {
+  apiCalls: boolean
   bar: boolean
   bg: boolean
   cacheHit: boolean
   compactCtx: boolean
   compressions: boolean
   duration: boolean
+  firstResponse: boolean
   latency: boolean
   subagents: boolean
   tps: boolean
@@ -327,8 +329,10 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     bg: w >= 88,
     subagents: w >= 92,
     cacheHit: w >= 96,
+    apiCalls: w >= 100,
     latency: w >= 104,
-    tps: w >= 110
+    firstResponse: w >= 110,
+    tps: w >= 118
   }
 }
 
@@ -621,8 +625,18 @@ export function StatusRule({
   // cache reads, Codex app-server with no latency), so these self-hide.
   const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
+  const apiCallsText = usage.calls > 0 ? `api ${usage.calls}` : ''
+  const showApiCalls = segs.apiCalls && ok('calls') && !!apiCallsText && fits(SEP + stringWidth(apiCallsText))
+
   const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
+
+  const firstResponseText =
+    typeof usage.first_response_s === 'number' ? `first ${usage.first_response_s.toFixed(1)}s` : ''
+
+  const showFirstResponse =
+    segs.firstResponse && ok('first_response') && !!firstResponseText && fits(SEP + stringWidth(firstResponseText))
+
   const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
@@ -771,10 +785,22 @@ export function StatusRule({
             </Text>
           </Text>
         ) : null}
+        {showApiCalls ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {apiCallsText}
+          </Text>
+        ) : null}
         {showLatency ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {latencyText}
+          </Text>
+        ) : null}
+        {showFirstResponse ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {firstResponseText}
           </Text>
         ) : null}
         {showTps ? (

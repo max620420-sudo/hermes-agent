@@ -100,11 +100,56 @@ const baseProps = {
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
   turnStartedAt: null,
-  usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+  usage: {
+    calls: 0,
+    context_max: 200_000,
+    context_percent: 25,
+    context_used: 50_000,
+    input: 0,
+    output: 0,
+    total: 50_000
+  },
   voiceLabel: ''
 }
 
 describe('StatusRule session title', () => {
+  it('renders the latest first-visible response latency when requested', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 200,
+      statusBarFields: new Set(['first_response']),
+      usage: { ...baseProps.usage, first_response_s: 2.4, avg_first_response_s: 3.1 }
+    })
+
+    expect(textContent(element)).toContain('first 2.4s')
+  })
+
+  it('renders the session API call count when requested', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 200,
+      statusBarFields: new Set(['calls']),
+      usage: { ...baseProps.usage, calls: 7 }
+    })
+
+    expect(textContent(element)).toContain('api 7')
+  })
+
+  it('keeps calls and first-response ahead of tps at constrained widths', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 110,
+      statusBarFields: new Set(['calls', 'first_response', 'tps']),
+      usage: { ...baseProps.usage, avg_tps: 22, calls: 7, first_response_s: 2.4 }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('api 7')
+    expect(rendered).toContain('first 2.4s')
+    expect(rendered).not.toContain('t/s')
+  })
+
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {
       for (const estimated of [true, false]) {

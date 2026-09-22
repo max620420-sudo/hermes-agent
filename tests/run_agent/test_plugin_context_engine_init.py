@@ -157,7 +157,7 @@ def test_codex_gpt55_autoraise_suppressed_for_plugin_engine():
     """Codex gpt-5.5 autoraise must not fire when an external engine is active.
 
     Regression test for #44439 — the host compression threshold (including
-    the 0.85 autoraise) never reaches a plugin context engine, so the notice
+    the 0.75 autoraise) never reaches a plugin context engine, so the notice
     announced a change that did not apply.
     """
     engine = _StubEngine()
@@ -187,7 +187,7 @@ def test_codex_gpt55_autoraise_suppressed_for_plugin_engine():
 
 
 def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
-    """Stock built-in compressor keeps the 50% → 85% Codex gpt-5.5 autoraise."""
+    """Stock built-in compressor keeps the 50% → 75% Codex gpt-5.5 autoraise."""
     cfg = {
         "compression": {"enabled": True, "threshold": 0.50},
         "agent": {},
@@ -204,9 +204,9 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
 
         agent = AIAgent(**_codex_agent_kwargs())
 
-    assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
-    assert agent.context_compressor.threshold_percent == 0.85
+    assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.75}
+    assert agent.context_compressor.threshold_percent == 0.75
     # Gateway parity: the notice is stashed for replay on turn 1.
-    assert agent._compression_warning and "85%" in agent._compression_warning
+    assert agent._compression_warning and "75%" in agent._compression_warning
 
 

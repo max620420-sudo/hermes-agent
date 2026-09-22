@@ -34,7 +34,7 @@ from agent.agent_init import (
 )
 
 # The dict agent_init stashes when the Codex gpt-5.5 override fires.
-AUTORAISE = {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
+AUTORAISE = {"model": "gpt-5.5", "from": 0.50, "to": 0.75}
 
 
 def _config(*, show_notice: bool) -> dict:
@@ -102,7 +102,7 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
     assert getattr(agent1, "_compression_warning") is not None
 
     agent2, stdout2 = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
-    assert _threshold_ratio(agent2) == 0.85  # autoraise still applies
+    assert _threshold_ratio(agent2) == 0.75  # autoraise still applies
     assert "auto-compaction was raised" not in stdout2
     assert getattr(agent2, "_compression_warning") is None
 
@@ -126,7 +126,7 @@ def test_changed_threshold_renotifies_once() -> None:
     _record_codex_gpt55_autoraise_notice(AUTORAISE)
     assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is True
     # User raises their global threshold -> "from" changes -> notice re-fires.
-    changed = {"model": "gpt-5.5", "from": 0.60, "to": 0.85}
+    changed = {"model": "gpt-5.5", "from": 0.60, "to": 0.75}
     assert _codex_gpt55_autoraise_notice_seen(changed) is False
     _record_codex_gpt55_autoraise_notice(changed)
     assert _codex_gpt55_autoraise_notice_seen(changed) is True

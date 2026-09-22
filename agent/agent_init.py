@@ -1367,7 +1367,7 @@ def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
 
 def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
-    Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
+    Codex 272K-capped GPT/Astra families raise to 75% (~204K); the opt-out flag
     restores the global value, and the notice has its own display gate."""
     threshold = float(cfg.get("threshold", 0.50))
     autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)

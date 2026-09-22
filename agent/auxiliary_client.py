@@ -577,8 +577,8 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
 
 
 # Codex OAuth hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at 272K (raw API/OpenRouter expose 1.05M);
-# the default 50% trigger would compact at ~136K, so raise to 85% (~231K).
-_CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
+# the default 50% trigger would compact at ~136K, so raise to 75% (~204K).
+_CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.75
 # gpt-5.3-codex-spark: Codex-OAuth-only, native 128K; 70% (~90K) leaves summary headroom.
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
@@ -631,7 +631,7 @@ def _compression_threshold_for_model(
     """Per-model/route compression threshold override (fraction of context used), or None.
 
     Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
-    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
+    → 0.75, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75

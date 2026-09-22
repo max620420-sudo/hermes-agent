@@ -67,7 +67,7 @@ class TestGpt56PricingRoute:
 
 class TestGpt56CodexCompaction:
     """Codex OAuth caps the whole gpt-5.6 family at 272K, same as 5.4/5.5, so
-    the compaction auto-raise (0.85) must fire for every 5.6 variant on the
+    the compaction auto-raise (0.75) must fire for every 5.6 variant on the
     openai-codex route and NOT on the direct-API/OpenRouter routes."""
 
     def test_autoraise_applies_to_all_56_on_codex(self):
@@ -83,7 +83,7 @@ class TestGpt56CodexCompaction:
         ):
             assert (
                 _compression_threshold_for_model(slug, provider="openai-codex")
-                == 0.85
+                == 0.75
             ), slug
 
     def test_no_autoraise_on_direct_api_route(self):
@@ -102,11 +102,24 @@ class TestGpt56CodexCompaction:
             is None
         )
 
+    def test_900k_variants_keep_the_long_context_threshold(self):
+        from agent.auxiliary_client import _compression_threshold_for_model
+
+        for slug in (
+            "gpt-5.6-sol-900k",
+            "gpt-5.4-900k",
+            "gpt-daybreak-blue-latest-900k",
+        ):
+            assert (
+                _compression_threshold_for_model(slug, provider="openai-codex")
+                is None
+            ), slug
+
     def test_astra_autoraise_on_codex_unless_900k(self):
         """Astra is 272K-capped on Codex OAuth like 5.6; the -900k opt-in variants are not."""
         from agent.auxiliary_client import _compression_threshold_for_model
 
         for slug in ("gpt-6-astra", "openai/gpt-6-astra-pro", "gpt-6-astra-2026-09-01"):
-            assert _compression_threshold_for_model(slug, provider="openai-codex") == 0.85, slug
+            assert _compression_threshold_for_model(slug, provider="openai-codex") == 0.75, slug
             assert _compression_threshold_for_model(slug, provider="openrouter") is None, slug
         assert _compression_threshold_for_model("gpt-6-astra-900k", provider="openai-codex") is None

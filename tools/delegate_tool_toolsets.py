@@ -19,6 +19,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "send_message",  # no cross-platform side effects
         "present_wisdom_consent",  # only the main conversation can request user consent
         "cronjob_manage",  # no scheduling more work in the parent's name
+        "evidence_collect",  # opt-in parent-only local artifact reader
     ]
 )
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]

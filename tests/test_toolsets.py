@@ -216,6 +216,20 @@ class TestToolsetConsistency:
             assert "tools" in ts, f"{name} missing tools"
             assert "includes" in ts, f"{name} missing includes"
 
+    def test_evidence_collector_is_registered_but_opt_in_only(self):
+        from tools import evidence_collect_tool  # noqa: F401
+        from tools.registry import registry
+
+        entry = registry.get_entry("evidence_collect")
+        assert entry is not None
+        assert entry.toolset == "evidence"
+        assert resolve_toolset("evidence") == ["evidence_collect"]
+        for name in TOOLSETS:
+            if name.startswith("hermes-"):
+                assert "evidence_collect" not in resolve_toolset(name)
+        assert "evidence_collect" not in resolve_toolset("coding")
+        assert "evidence_collect" in resolve_toolset("all")
+
 
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.

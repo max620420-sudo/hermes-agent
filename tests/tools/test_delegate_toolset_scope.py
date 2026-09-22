@@ -8,7 +8,7 @@ arbitrary toolsets.
 
 from types import SimpleNamespace
 
-from tools.delegate_tool import _strip_blocked_tools, _emit_parent_console
+from tools.delegate_tool import _strip_blocked_tools, _emit_parent_console, _resolve_child_toolsets
 
 
 class TestToolsetIntersection:
@@ -46,6 +46,15 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+    def test_evidence_toolset_is_not_inherited_by_subagents(self):
+        parent = SimpleNamespace(enabled_toolsets=["file", "evidence"], disabled_toolsets=[])
+
+        enabled, disabled = _resolve_child_toolsets(parent, toolsets=None, effective_role="leaf")
+
+        assert "file" in enabled
+        assert "evidence" not in enabled
+        assert "evidence" in disabled
 
 
 class TestEmitParentConsole:

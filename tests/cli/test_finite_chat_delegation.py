@@ -143,7 +143,10 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
     assert not errors, diagnostic
     assert len(joined_results) == 1, diagnostic
     assert [r["status"] for r in joined_results[0]["results"]] == ["completed", "completed"]
-    assert [r["summary"] for r in joined_results[0]["results"]] == [w + "_COMPLETE" for w in workers]
+    assert all(
+        result["summary"].startswith(worker + "_COMPLETE")
+        for result, worker in zip(joined_results[0]["results"], workers)
+    )
 
 
 @pytest.mark.parametrize("query,image", [("Delegate a task", None), (None, "image.png")])

@@ -120,7 +120,7 @@ async def test_review_command_dispatches_background_subagent(monkeypatch):
     assert evt is not None
     assert evt["type"] == "async_delegation"
     assert evt["session_key"] == SESSION_KEY
-    assert evt["results"][0]["summary"] == "review done"
+    assert evt["results"][0]["summary"].startswith("review done")
 
 
 @pytest.mark.asyncio

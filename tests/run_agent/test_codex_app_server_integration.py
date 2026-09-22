@@ -561,7 +561,10 @@ class TestReviewForkApiModeDowngrade:
                 return None
             self.close = _no_op_close
 
-        with _patch("run_agent.AIAgent.__init__", _capture_init):
+        with _patch("run_agent.AIAgent.__init__", _capture_init), _patch(
+            "agent.background_review.load_background_review_settings",
+            return_value=(True, {}),
+        ):
             agent._spawn_background_review(
                 messages_snapshot=[{"role": "user", "content": "x"}],
                 review_memory=True,

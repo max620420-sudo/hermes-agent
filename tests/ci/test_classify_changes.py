@@ -297,7 +297,8 @@ def test_all_checks_gate_rejects_cancelled_jobs():
 def test_python_ci_slices_the_suite_on_standard_fork_runners():
     source = (_REPO / ".github/workflows/tests.yml").read_text(encoding="utf-8")
 
-    assert "HERMES_TEST_SLICE:" in source
+    assert 'scripts/run_tests.sh --slice "${{ matrix.slice }}"' in source
+    assert "HERMES_TEST_SLICE:" not in source
     assert '"1/8", "2/8", "3/8", "4/8"' in source
     assert '"5/8", "6/8", "7/8", "8/8"' in source
 

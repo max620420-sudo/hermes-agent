@@ -749,7 +749,7 @@ class AIAgent(
         if focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        if focus is None and not explicit:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:

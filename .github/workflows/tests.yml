@@ -105,7 +105,11 @@ jobs:
         # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          if [[ "${{ matrix.slice }}" == "all" ]]; then
+            scripts/run_tests.sh
+          else
+            scripts/run_tests.sh --slice "${{ matrix.slice }}"
+          fi
         env:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
@@ -129,7 +133,6 @@ jobs:
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
           HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && 96 || 4 }}
-          HERMES_TEST_SLICE: ${{ matrix.slice == 'all' && '' || matrix.slice }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

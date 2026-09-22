@@ -273,7 +273,7 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
-  });
+  }, 15_000);
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard

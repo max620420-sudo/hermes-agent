@@ -91,6 +91,13 @@ def _bare_agent() -> AIAgent:
     return agent
 
 
+def _enable_background_review(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, {}),
+    )
+
+
 class ImmediateThread:
     def __init__(self, *, target, daemon=None, name=None):
         self._target = target
@@ -189,6 +196,7 @@ def test_background_review_releases_clients_without_closing_shared_session(monke
     ``close()`` would therefore kill that session's registered terminal
     processes and tear down its environment when the review completes.
     """
+    _enable_background_review(monkeypatch)
     events = []
 
     class FakeReviewAgent:
@@ -229,6 +237,7 @@ def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     session rows) would end the still-active parent session mid-conversation
     every time the review fires (~every 10 turns). Regression for #12029.
     """
+    _enable_background_review(monkeypatch)
     seen = {}
 
     class FakeReviewAgent:
@@ -327,6 +336,10 @@ def test_background_review_runs_at_top_level(monkeypatch):
 
     monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
     monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, {}),
+    )
 
     agent = _bare_agent()
     agent._delegate_depth = 0  # top-level agent
@@ -421,6 +434,7 @@ def test_background_review_explicit_focus_runs_even_in_subagent(monkeypatch):
 
 def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch):
     """The parent must own a unique review run before the worker can start."""
+    _enable_background_review(monkeypatch)
     seen = {}
 
     class RecordingReviewAgent(FakeReviewAgent):
@@ -484,6 +498,7 @@ def test_background_review_snapshot_isolated_from_live_nested_messages():
 
 def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypatch):
     """The outer production wrapper waits before same-session instrumentation."""
+    _enable_background_review(monkeypatch)
     review_entered = threading.Event()
     review_returned = threading.Event()
     allow_review_return = threading.Event()
@@ -559,6 +574,7 @@ def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypat
 
 def test_live_turn_cancels_review_during_startup_before_provider(monkeypatch):
     """A review cancelled before its worker runs must never call its provider."""
+    _enable_background_review(monkeypatch)
     provider_calls = []
     boundary_reached = threading.Event()
 
@@ -612,6 +628,7 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
     """A broken review abort path must not block the foreground indefinitely.
     The live turn proceeds after the bounded wait, retaining foreground priority.
     """
+    _enable_background_review(monkeypatch)
     import time
 
     import agent.background_review as background_review_module
@@ -756,6 +773,10 @@ def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):
     monkeypatch.setattr(run_agent_module, "AIAgent", BlockingCleanupReviewAgent)
     CapturingThread.targets = []
     monkeypatch.setattr(run_agent_module.threading, "Thread", CapturingThread)
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, {}),
+    )
 
     agent = _bare_agent()
     AIAgent._spawn_background_review(

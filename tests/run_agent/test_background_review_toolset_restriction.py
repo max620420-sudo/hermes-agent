@@ -15,6 +15,18 @@ that caused the prefix-cache miss.
 
 from unittest.mock import patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _enable_background_review(monkeypatch):
+    from agent.background_review import _background_review_task_config
+
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, _background_review_task_config()),
+    )
+
 
 def _make_agent_stub(agent_cls):
     """Create a minimal AIAgent-like object with just enough state for _spawn_background_review."""

@@ -716,6 +716,8 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
 
     fixed_info = {"model": "gold-model", "provider": "gold-provider", "usage": {"total": 15}}
     usage = server._get_usage(_Agent())
+    usage.update(first_response_s=0.0, avg_first_response_s=0.0)
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: dict(usage))
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
@@ -16503,6 +16505,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)

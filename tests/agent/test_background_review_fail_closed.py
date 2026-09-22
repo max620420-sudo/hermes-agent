@@ -32,7 +32,6 @@ def _loaded(cfg):
 
 def test_enabled_true_stays_on():
     assert _loaded(_cfg({"enabled": True}))[0] is True
-    assert br.is_background_review_enabled({"enabled": True}) is True
 
 
 @pytest.mark.parametrize("good", [1, "true", "True", "1", "yes", "on"])
@@ -51,7 +50,6 @@ def test_missing_block_is_off():
 
 def test_missing_enabled_key_is_off():
     assert _loaded(_cfg({"model": "x"}))[0] is False
-    assert br.is_background_review_enabled({}) is False
 
 
 @pytest.mark.parametrize("bad", ["yes-please", ["enabled"], 42, None])

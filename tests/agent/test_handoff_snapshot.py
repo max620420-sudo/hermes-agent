@@ -177,6 +177,32 @@ def test_save_and_load_latest_handoff_snapshot_roundtrip():
     assert "task B (newer)" in latest["CURRENT_TASK"]
 
 
+def test_latest_handoff_orders_saves_within_same_millisecond(monkeypatch):
+    db = _FakeSessionDB()
+
+    class _Agent:
+        _session_db = db
+        cwd = "/repo/hermes-agent"
+        session_id = "source"
+
+    first = {"_session_id": "source", "_saved_at": 1000.0001, "CURRENT_TASK": "first"}
+    second = {"_session_id": "source", "_saved_at": 1000.0009, "CURRENT_TASK": "second"}
+    # Force the random suffix to sort in the opposite order from save time.
+    suffixes = iter(("ffffffff", "00000000"))
+    monkeypatch.setattr(hs, "_unique_suffix", lambda: next(suffixes))
+    hs.save_handoff_snapshot(_Agent(), first)
+    hs.save_handoff_snapshot(_Agent(), second)
+
+    class _Query:
+        _session_db = db
+        cwd = "/repo/hermes-agent"
+        session_id = "other"
+
+    latest = hs.load_latest_handoff_snapshot(_Query())
+    assert latest is not None
+    assert latest["CURRENT_TASK"] == "second"
+
+
 def test_load_latest_handoff_snapshot_returns_none_without_session_db():
     class _FakeAgent:
         _session_db = None

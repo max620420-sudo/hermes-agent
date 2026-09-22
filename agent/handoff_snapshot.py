@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -325,15 +326,29 @@ def load_latest_handoff_snapshot(agent: Any) -> Optional[Dict[str, Any]]:
         return None
     if not rows:
         return None
-    # Keys sort chronologically (zero-padded epoch-millis suffix) — walk
-    # newest-first so the first non-self, well-formed row wins.
-    for _key, value in sorted(rows, key=lambda kv: kv[0], reverse=True):
+    # Keys preserve only milliseconds; the random collision suffix is not
+    # chronological. Prefer the full saved timestamp for same-ms snapshots.
+    candidates = []
+    for key, value in rows:
         try:
             snapshot = json.loads(value)
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
         if not isinstance(snapshot, dict):
             continue
+        try:
+            saved_at = float(snapshot["_saved_at"])
+            if not math.isfinite(saved_at):
+                raise ValueError("non-finite snapshot timestamp")
+        except (KeyError, TypeError, ValueError):
+            # Older rows may lack the timestamp in the payload; retain their
+            # previous ordering using the timestamp encoded in the key.
+            try:
+                saved_at = int(key[len(prefix):].split("::", 1)[0]) / 1000
+            except (TypeError, ValueError):
+                continue
+        candidates.append((saved_at, key, snapshot))
+    for _saved_at, _key, snapshot in sorted(candidates, reverse=True):
         if current_session_id and snapshot.get("_session_id") == current_session_id:
             continue  # skip our own snapshot; keep looking further back
         return snapshot

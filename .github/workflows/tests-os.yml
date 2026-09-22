@@ -51,7 +51,9 @@ concurrency:
 jobs:
   os-tests:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    # The 32-core Windows runner exists only in the upstream repository.
+    # Forks retain the same tests on the standard hosted runner.
+    runs-on: ${{ matrix.name == 'Windows-only tests' && github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -61,7 +63,7 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code
